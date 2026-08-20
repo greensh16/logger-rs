@@ -1,6 +1,6 @@
 [package]
 name = "hpc-telemetry"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["HPC Dashboard Team"]
 description = "High-performance telemetry logger for HPC jobs (cgroup v1 and v2)"
