@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is in the matrix because the crate is developed there; the
+        # non-Linux stub paths need to keep compiling.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all-features --verbose
+
+      # The schema is the contract with the dashboard, so give it its own step:
+      # a failure here should be obvious in the checks list rather than buried.
+      - name: Schema contract
+        run: cargo test --test schema_contract -- --nocapture
+
+  msrv:
+    name: Minimum supported Rust (1.87)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the exact version in Cargo.toml's `rust-version`. Without
+      # this the MSRV is only a claim: every developer machine runs something
+      # newer, so an accidental bump — clippy suggesting a freshly-stabilised
+      # API, say — goes unnoticed until someone with an older toolchain tries
+      # to build. Bump both this and Cargo.toml together, on purpose.
+      - uses: dtolnay/rust-toolchain@1.87.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --all-targets --all-features
+
+  build-musl:
+    name: Static musl build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Verify the binary is actually static
+        run: |
+          BIN=target/x86_64-unknown-linux-musl/release/hpc-telemetry
+          file "$BIN"
+          # A dynamically linked binary would fail to run on Gadi's compute
+          # nodes if their glibc differs from the build host's.
+          if file "$BIN" | grep -q "dynamically linked"; then
+            echo "::error::binary is dynamically linked; it must be static"
+            exit 1
+          fi
+          ls -lh "$BIN"
+
+      - name: Smoke test the CLI
+        run: |
+          BIN=target/x86_64-unknown-linux-musl/release/hpc-telemetry
+          "$BIN" --help
+          "$BIN" --version
+          # Invalid intervals must be rejected rather than silently spinning.
+          if "$BIN" --output /tmp/x.log --interval 0 2>/dev/null; then
+            echo "::error::--interval 0 should have been rejected"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hpc-telemetry-x86_64-musl
+          path: target/x86_64-unknown-linux-musl/release/hpc-telemetry
+          if-no-files-found: error
+
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          # --severity=warning skips info-level style notes, notably SC2317
+          # ("unreachable command"), which fires spuriously on functions that
+          # are only ever invoked from a trap — exactly how _ht_on_exit works
+          # in hpc-telemetry.sh.
+          #
+          # -x follows `source`d files; hpc-telemetry.sh is only ever sourced,
+          # so shellcheck is told which shell it targets rather than guessing
+          # from a missing shebang context.
+          shellcheck --severity=warning --shell=bash hpc-telemetry.sh build-linux.sh

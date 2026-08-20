@@ -1,0 +1,87 @@
+#!/bin/bash
+#
+# Copy this, change the four marked lines, submit with `qsub`.
+#
+# ---------------------------------------------------------------------------
+#PBS -P ab12
+#PBS -q normal
+#PBS -l ncpus=48
+#PBS -l mem=190GB
+#PBS -l walltime=02:00:00
+#PBS -l wd
+#
+# storage= is the line people forget, and it fails in a way that looks like a
+# permissions bug rather than a missing request. Every filesystem the job
+# touches must be listed, or it simply is not mounted inside the job — that
+# includes wherever the telemetry logs are written. List your own project's
+# gdata and scratch here.
+#PBS -l storage=gdata/ab12+scratch/ab12
+#
+#PBS -N my_model
+#PBS -j oe
+# ---------------------------------------------------------------------------
+
+set -euo pipefail
+
+module use /g/data/gb02/modules
+module load hpc-telemetry
+source hpc-telemetry.sh
+
+# Where the telemetry lands. It must be on a filesystem listed in storage=
+# above, and for a multi-node job it must be *shared* — each node writes its
+# own file here and they are merged at the end, so /tmp or jobfs would leave
+# the merge with only one node's worth.
+export HPC_DASHBOARD_DIR="/g/data/ab12/dashboard/$USER"
+
+# --- anything before telemetry_start is NOT measured -------------------------
+#
+# Put setup here: unpacking inputs, building a conda environment, staging data
+# onto node-local disk. None of it is your science, and most of it is nearly
+# idle CPU-wise — measured, it drags the whole job's efficiency down and makes
+# the dashboard recommend fewer cores than you actually need.
+#
+# (If you do stage onto node-local scratch via $PBS_JOBFS, note that needs its
+# own directive above — e.g. #PBS -l jobfs=100GB. Gadi's default allocation is
+# far too small for real inputs, and a copy that overruns it fails.)
+
+
+# --- the measured region -----------------------------------------------------
+#
+# Put telemetry_start and telemetry_stop around whatever you want measured.
+# Anything goes between them — pipelines, redirections, several launches, a
+# command line built up in variables. Your script does not change shape.
+
+telemetry_start
+
+mpirun -np "$PBS_NCPUS" ./my_model
+
+telemetry_stop
+
+
+# --- anything after telemetry_stop is NOT measured ---------------------------
+#
+# Copying results back, tidying up, and so on.
+
+# ---------------------------------------------------------------------------
+# telemetry_stop is optional. If the script ends, exits early under `set -e`,
+# or PBS terminates it at the walltime limit, an EXIT trap performs the same
+# shutdown. Calling it explicitly is better where you can: it records the exit
+# status of your workload directly, and it keeps clean-up out of the numbers.
+#
+# Nothing here can fail your job. A missing binary or an unwritable output
+# directory is reported and then ignored — running unmeasured beats not
+# running.
+# ---------------------------------------------------------------------------
+#
+# Before submitting anything long, check the environment is actually going to
+# work. Start a short interactive job and run:
+#
+#   qsub -I -P ab12 -q normal -l ncpus=4,mem=16GB,walltime=00:10:00 \
+#        -l storage=gdata/ab12
+#   module use /g/data/gb02/modules && module load hpc-telemetry
+#   hpc-telemetry --check
+#
+# That reports what can and cannot be measured here — cgroup scope, which
+# controllers the job actually owns, whether the output path is writable — in
+# a few seconds, instead of you finding out from a wrong-looking log file after
+# a queue wait.

@@ -1,0 +1,62 @@
+[package]
+name = "hpc-telemetry"
+version = "0.1.0"
+edition = "2021"
+authors = ["HPC Dashboard Team"]
+description = "High-performance telemetry logger for HPC jobs (cgroup v1 and v2)"
+
+# Declared, not just documented. Cargo refuses to build on anything older with
+# a clear message, and clippy reads this to avoid suggesting APIs newer than it
+# — which is the actual point: a README-only MSRV silently drifted twice, both
+# times via clippy proposing `u64::is_multiple_of` (stabilised here in 1.87).
+# Raise this deliberately when a newer API earns it; do not let a lint do it.
+rust-version = "1.87"
+
+[dependencies]
+# CLI argument parsing
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+# "termination" is required: without it ctrlc only installs a SIGINT handler,
+# but PBS sends SIGTERM on walltime exhaustion and qdel. Without SIGTERM
+# handling those jobs die with no job_end line and no summary file.
+ctrlc = { version = "3.5.2", features = ["termination"] }
+num_cpus = "1.17.0"
+
+# Linux-specific system dependencies
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = "0.16"          # /proc filesystem parsing
+nix = { version = "0.29", features = ["process", "sched"] }  # CPU affinity, signals
+libc = "0.2"              # Low-level system calls
+
+[dev-dependencies]
+tempfile = "3.10"         # Testing with temp files
+
+# The library holds all the real logic; the binary is a thin wrapper. This lets
+# integration tests in tests/ (notably the NDJSON schema contract test) depend on
+# the same types the binary emits.
+[lib]
+name = "hpc_telemetry"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hpc-telemetry"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"               # Link-time optimization
+codegen-units = 1         # Better optimization
+strip = true              # Strip symbols for smaller binary
+# NOTE: panic = "abort" is deliberately NOT set. Aborting skips unwinding, which
+# means Drop never runs and TelemetryLogger's last-resort summary write on panic
+# is silently dead. The few KB of binary size is not worth losing a job's summary.

@@ -1,0 +1,233 @@
+# Build and publish an HPC-ready release when a tag is pushed.
+#
+#   git tag -a v0.2.0 -m "..." && git push origin v0.2.0
+#
+# Produces one tarball that unpacks straight into the module tree documented in
+# examples/modulefile, plus a SHA256 to check the transfer to Gadi.
+#
+# Why a tarball rather than a bare binary: the binary and hpc-telemetry.sh are a
+# matched pair. The library invokes the binary by name from PATH, so a prefix
+# holding one but not the other loads cleanly through `module load` and then
+# fails at job start with a confusing "not found". Shipping them separately
+# makes that mismatch easy to create; shipping them together makes it hard.
+#
+# The build is static musl, so it runs on any Gadi node regardless of the
+# host's glibc — see the "verify" step, which fails the release rather than
+# publishing something that would only break on the compute nodes.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Lets the packaging be exercised without cutting a real release. Skips
+  # publishing; the artifact is still attached to the run.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      # A tag that disagrees with Cargo.toml ships a binary whose --version
+      # contradicts the release it came from, and nobody can then tell what is
+      # actually deployed. Cheap to check, miserable to discover later.
+      - name: Check the tag matches Cargo.toml
+        id: version
+        run: |
+          set -euo pipefail
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "cargo_version=$CARGO_VERSION" >> "$GITHUB_OUTPUT"
+
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            echo "Manual run; packaging version $CARGO_VERSION without publishing."
+            echo "version=$CARGO_VERSION" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$TAG_VERSION" != "$CARGO_VERSION" ]]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${CARGO_VERSION}."
+            echo "Bump the version in Cargo.toml and re-tag, or tag v${CARGO_VERSION}."
+            exit 1
+          fi
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+
+      # Releasing an untested build defeats the point of having tests.
+      - name: Test
+        run: cargo test --all-features
+
+      - name: Schema contract
+        run: cargo test --test schema_contract -- --nocapture
+
+      - name: Build
+        run: cargo build --release --target "$TARGET"
+
+      - name: Verify the binary is static and runs
+        run: |
+          set -euo pipefail
+          BIN="target/$TARGET/release/hpc-telemetry"
+          file "$BIN"
+          if file "$BIN" | grep -q "dynamically linked"; then
+            echo "::error::binary is dynamically linked; it would not run on Gadi's compute nodes"
+            exit 1
+          fi
+          "$BIN" --version
+          "$BIN" --help > /dev/null
+
+          # The reported version must match what we are publishing, or
+          # `hpc-telemetry --version` on Gadi will not identify the release it
+          # came from.
+          REPORTED=$("$BIN" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          if [[ "$REPORTED" != "${{ steps.version.outputs.cargo_version }}" ]]; then
+            echo "::error::binary reports $REPORTED, expected ${{ steps.version.outputs.cargo_version }}"
+            exit 1
+          fi
+
+      - name: Shellcheck the shipped library
+        run: |
+          sudo apt-get install -y shellcheck
+          shellcheck --severity=warning --shell=bash hpc-telemetry.sh
+
+      # Laid out to match examples/modulefile, so installing is one `tar -xzf`
+      # into the version directory the modulefile already points at.
+      - name: Stage the release tree
+        id: stage
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          STAGE="hpc-telemetry-${VERSION}"
+          TARBALL="${STAGE}-x86_64-linux-musl.tar.gz"
+
+          mkdir -p "$STAGE/bin" "$STAGE/examples"
+          cp "target/$TARGET/release/hpc-telemetry" "$STAGE/bin/"
+          cp hpc-telemetry.sh                       "$STAGE/bin/"
+          cp examples/gadi-job.pbs examples/modulefile "$STAGE/examples/"
+          cp README.md "$STAGE/"
+          # Permissions are set explicitly rather than inherited, because this
+          # unpacks into a *shared* project directory that colleagues load the
+          # module from. A file that arrives mode 600 — which is what a
+          # restrictive umask on the packaging machine would produce — loads
+          # fine for whoever installed it and fails for everyone else, which is
+          # a miserable class of bug to chase.
+          #
+          # a+rX: readable by all, executable only where it already is, plus
+          # directories so they can be traversed.
+          chmod -R a+rX "$STAGE"
+          chmod 755 "$STAGE/bin/hpc-telemetry"
+          # Sourced, never executed — but an unreadable file breaks `source`
+          # just as thoroughly as a missing one.
+          chmod 644 "$STAGE/bin/hpc-telemetry.sh"
+
+          tar -czf "$TARBALL" "$STAGE"
+          sha256sum "$TARBALL" > "${TARBALL}.sha256"
+
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+          echo "--- contents ---"
+          tar -tzf "$TARBALL"
+
+      # Unpack somewhere clean and use it exactly as the docs tell a user to.
+      # Catches the packaging mistakes that a file listing cannot: a library
+      # that is present but unreadable, or a binary that lost its +x.
+      - name: Install-test the tarball
+        run: |
+          set -euo pipefail
+          TMP=$(mktemp -d)
+          mkdir -p "$TMP/prefix"
+          tar -xzf "${{ steps.stage.outputs.tarball }}" -C "$TMP/prefix" --strip-components=1
+
+          export PATH="$TMP/prefix/bin:$PATH"
+          export PBS_JOBID="ci-test"
+
+          hpc-telemetry --version
+          # --check runs on a half-configured system by design, and CI is one:
+          # no cgroup scope, so it is expected to report problems. What matters
+          # is that it runs and produces a report rather than crashing.
+          hpc-telemetry --check || true
+
+          cd "$TMP"
+          # shellcheck source=/dev/null
+          source hpc-telemetry.sh
+          if ! declare -F telemetry_start > /dev/null; then
+            echo "::error::telemetry_start not defined after sourcing the packaged library"
+            exit 1
+          fi
+          if ! declare -F telemetry_stop > /dev/null; then
+            echo "::error::telemetry_stop not defined after sourcing the packaged library"
+            exit 1
+          fi
+          echo "packaged library sources cleanly and defines both functions"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.tarball }}
+          path: |
+            ${{ steps.stage.outputs.tarball }}
+            ${{ steps.stage.outputs.tarball }}.sha256
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: hpc-telemetry ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.stage.outputs.tarball }}
+            ${{ steps.stage.outputs.tarball }}.sha256
+          body: |
+            Static `x86_64` Linux build (musl), for Gadi and any other
+            `x86_64` Linux HPC. No runtime dependencies.
+
+            ### Install into the module tree
+
+            ```bash
+            VERSION=${{ steps.version.outputs.version }}
+            PREFIX=/g/data/gb02/hpc-telemetry/$VERSION
+
+            mkdir -p "$PREFIX"
+            tar -xzf hpc-telemetry-$VERSION-x86_64-linux-musl.tar.gz \
+                -C "$PREFIX" --strip-components=1
+            ```
+
+            That gives `$PREFIX/bin/hpc-telemetry` and
+            `$PREFIX/bin/hpc-telemetry.sh` — the layout `examples/modulefile`
+            expects. Point the modulefile at the new version and users pick it
+            up on their next `module load`.
+
+            Verify the transfer with `sha256sum -c`.
+
+            ### Use it
+
+            ```bash
+            module use /g/data/gb02/modules
+            module load hpc-telemetry
+            source hpc-telemetry.sh
+
+            telemetry_start
+                <your commands>
+            telemetry_stop
+            ```
+
+            Run `hpc-telemetry --check` inside a short interactive job first to
+            confirm what can be measured on the node.

@@ -1,0 +1,573 @@
+#!/bin/bash
+#PBS -N telemetry-test
+#PBS -q normal
+#PBS -l ncpus=96
+#PBS -l mem=64GB
+#PBS -l walltime=00:20:00
+#PBS -l wd
+#PBS -j oe
+#PBS -P gb02
+#PBS -l storage=gdata/gb02
+#
+# The storage directive above is what makes /g/data/gb02 visible to the job.
+# Without it the telemetry directory below is simply not there, and the run
+# fails at preflight rather than silently writing nowhere useful.
+#
+# End-to-end test of hpc-telemetry on Gadi.
+#
+# ncpus=96 on the normal queue is 2 nodes of 48 cores, which is the smallest
+# allocation that actually exercises the multi-node paths. For a single-node
+# smoke test, change to ncpus=48 and the script adapts automatically.
+#
+# The workload is synthetic and its resource usage is known in advance, so the
+# script can *check* the telemetry rather than just producing some. It runs four
+# phases on every node:
+#
+#   1. CPU     — a known number of cores busy for a known time
+#   2. Memory  — allocate and hold a known amount
+#   3. Fork    — spawn and reap many short-lived children doing I/O
+#   4. Idle    — a quiet stretch, so utilisation is not flat
+#
+# Phase 3 is the interesting one: it used to make lifetime I/O totals collapse
+# to near zero, because the counters were summed over live processes only.
+#
+# Submit with:
+#   qsub testing/test_telemetry.pbs
+#
+# Everything lands in $OUTDIR (printed below) and the script prints a PASS/FAIL
+# report at the end. Exit status is non-zero if any check fails.
+
+set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+TELEMETRY_BIN="${TELEMETRY_BIN:-$HOME/bin/hpc-telemetry}"
+TELEMETRY_LIB="${TELEMETRY_LIB:-$HOME/bin/hpc-telemetry.sh}"
+
+# Telemetry goes where the dashboard reads from. This is a *shared* directory
+# holding every job's files, not a per-run scratch area — which is exactly what
+# the dashboard's job list wants, and why every glob in the checker below is
+# scoped to this job's id rather than matching "any psutil_* file here".
+OUTDIR="${OUTDIR:-/g/data/gb02/sg7549/dashboard_logs}"
+
+# The test's own scratch (workload.sh, driver.sh, check.py, per-run artefacts)
+# stays out of the dashboard's directory — those are not telemetry and would
+# show up as clutter, or worse, get mistaken for job files.
+WORKDIR="${WORKDIR:-${PBS_O_WORKDIR:-$PWD}/telemetry-test-${PBS_JOBID:-local}}"
+
+# Workload shape. Expected core-seconds per node is BUSY_CORES x BUSY_SECS.
+BUSY_CORES="${BUSY_CORES:-24}"
+BUSY_SECS="${BUSY_SECS:-60}"
+MEM_MB="${MEM_MB:-4096}"
+FORK_CHILDREN="${FORK_CHILDREN:-200}"
+IDLE_SECS="${IDLE_SECS:-10}"
+
+mkdir -p "$WORKDIR" || { echo "cannot create $WORKDIR"; exit 1; }
+
+if ! mkdir -p "$OUTDIR" 2>/dev/null; then
+    echo "PREFLIGHT FAILED: cannot create the telemetry directory $OUTDIR" >&2
+    echo "  If this is /g/data, check the job has '#PBS -l storage=gdata/<project>'" >&2
+    echo "  for the right project — without it the filesystem is not mounted in" >&2
+    echo "  the job at all." >&2
+    exit 1
+fi
+if [[ ! -w "$OUTDIR" ]]; then
+    echo "PREFLIGHT FAILED: $OUTDIR exists but is not writable by $(whoami)" >&2
+    exit 1
+fi
+
+echo "=========================================================================="
+echo " hpc-telemetry test"
+echo "=========================================================================="
+echo "  job id      : ${PBS_JOBID:-<none>}"
+echo "  telemetry   : $OUTDIR  (shared — the dashboard reads this)"
+echo "  test scratch: $WORKDIR"
+echo "  binary      : $TELEMETRY_BIN"
+echo "  library     : $TELEMETRY_LIB"
+echo "  workload    : ${BUSY_CORES} cores x ${BUSY_SECS}s, ${MEM_MB}MB, ${FORK_CHILDREN} forks"
+echo
+
+# ---------------------------------------------------------------------------
+# Phase 0: preflight
+# ---------------------------------------------------------------------------
+
+fail_hard() { echo "PREFLIGHT FAILED: $*" >&2; exit 1; }
+
+[[ -x "$TELEMETRY_BIN" ]] || fail_hard "telemetry binary not found or not executable: $TELEMETRY_BIN"
+[[ -r "$TELEMETRY_LIB" ]] || fail_hard "telemetry library not found: $TELEMETRY_LIB"
+
+echo "--- binary ---"
+"$TELEMETRY_BIN" --version || fail_hard "binary will not run (wrong architecture? not static?)"
+echo
+
+echo "--- allocation ---"
+if [[ -r "${PBS_NODEFILE:-/dev/null}" ]]; then
+    NNODES=$(sort -u "$PBS_NODEFILE" | wc -l)
+    echo "  nodes ($NNODES):"
+    sort -u "$PBS_NODEFILE" | sed 's/^/    /'
+else
+    NNODES=1
+    echo "  no PBS_NODEFILE; assuming 1 node"
+fi
+# Cores per node, counted from PBS_NODEFILE — it has one line per allocated CPU,
+# so counting the lines for one host gives that node's core count directly.
+#
+# Do NOT divide $NCPUS by the node count: on Gadi NCPUS is the *per chunk*
+# figure (48 for a 96-CPU two-node job), so dividing halves it.
+if [[ -r "${PBS_NODEFILE:-/dev/null}" ]]; then
+    FIRST_HOST=$(head -1 "$PBS_NODEFILE")
+    NCPUS_PER_NODE=$(grep -c "^${FIRST_HOST}$" "$PBS_NODEFILE")
+    NCPUS_TOTAL=$(wc -l < "$PBS_NODEFILE")
+else
+    NCPUS_PER_NODE=$(nproc)
+    NCPUS_TOTAL="$NCPUS_PER_NODE"
+fi
+echo "  ncpus total : $NCPUS_TOTAL  (per node: $NCPUS_PER_NODE)"
+echo "  \$NCPUS      : ${NCPUS:-<unset>}  (per chunk on PBS, not the allocation)"
+echo
+
+if (( BUSY_CORES > NCPUS_PER_NODE )); then
+    echo "  note: BUSY_CORES ($BUSY_CORES) > cores per node; clamping"
+    BUSY_CORES="$NCPUS_PER_NODE"
+fi
+
+echo "--- cgroup as this job sees it ---"
+echo "  /proc/self/cgroup:"
+sed 's/^/    /' /proc/self/cgroup 2>/dev/null || echo "    (unreadable)"
+echo "  cgroup v2 unified mounted: $(mount | grep -qw cgroup2 && echo yes || echo no)"
+echo "  remote launcher available:"
+for c in pbs_tmrsh pbsdsh srun; do
+    printf '    %-10s %s\n' "$c" "$(command -v $c >/dev/null 2>&1 && echo yes || echo no)"
+done
+echo
+
+# python3 is needed for the memory phase and the verification report.
+if ! command -v python3 >/dev/null 2>&1; then
+    module load python3 2>/dev/null || true
+fi
+command -v python3 >/dev/null 2>&1 || fail_hard "python3 not available (try: module load python3)"
+
+# ---------------------------------------------------------------------------
+# The synthetic workload
+# ---------------------------------------------------------------------------
+
+cat > "$WORKDIR/workload.sh" <<WORKLOAD
+#!/bin/bash
+# Runs on ONE node. Invoked once per node by the driver below.
+set -uo pipefail
+BUSY_CORES=$BUSY_CORES
+BUSY_SECS=$BUSY_SECS
+MEM_MB=$MEM_MB
+FORK_CHILDREN=$FORK_CHILDREN
+IDLE_SECS=$IDLE_SECS
+HOST=\$(hostname -s)
+
+echo "[\$HOST] phase 1: \$BUSY_CORES cores busy for \${BUSY_SECS}s"
+for ((i=0; i<BUSY_CORES; i++)); do
+    timeout "\$BUSY_SECS" bash -c 'while :; do :; done' &
+done
+wait
+
+echo "[\$HOST] phase 2: holding \${MEM_MB}MB for 15s"
+python3 -c "
+import time
+# Touch every page so it is actually resident, not just mapped.
+buf = bytearray(${MEM_MB} * 1024 * 1024)
+for i in range(0, len(buf), 4096):
+    buf[i] = 1
+time.sleep(15)
+"
+
+echo "[\$HOST] phase 3: \$FORK_CHILDREN short-lived children doing I/O"
+for ((i=0; i<FORK_CHILDREN; i++)); do
+    (
+        f=\$(mktemp)
+        dd if=/dev/zero of="\$f" bs=1M count=4 2>/dev/null
+        sync "\$f" 2>/dev/null || true
+        cat "\$f" > /dev/null
+        rm -f "\$f"
+    ) &
+    # Keep a bounded number in flight, and reap them as we go — that reaping is
+    # exactly what used to erase the I/O totals.
+    if (( i % 20 == 19 )); then wait; fi
+done
+wait
+
+echo "[\$HOST] phase 4: idle for \${IDLE_SECS}s"
+sleep "\$IDLE_SECS"
+echo "[\$HOST] workload complete"
+WORKLOAD
+chmod +x "$WORKDIR/workload.sh"
+
+# Driver: fan the workload out to every node so the remote loggers have
+# something real to measure. Without this the remote nodes would read ~0% and we
+# could not tell a broken logger from an idle node.
+cat > "$WORKDIR/driver.sh" <<DRIVER
+#!/bin/bash
+set -uo pipefail
+WORKLOAD="$WORKDIR/workload.sh"
+
+if [[ -r "\${PBS_NODEFILE:-/dev/null}" ]]; then
+    mapfile -t HOSTS < <(sort -u "\$PBS_NODEFILE")
+else
+    HOSTS=("\$(hostname)")
+fi
+
+LOCAL=\$(hostname -s)
+pids=()
+for h in "\${HOSTS[@]}"; do
+    if [[ "\${h%%.*}" == "\$LOCAL" ]]; then
+        "\$WORKLOAD" & pids+=(\$!)
+    elif command -v pbs_tmrsh >/dev/null 2>&1; then
+        pbs_tmrsh "\$h" "\$WORKLOAD" & pids+=(\$!)
+    else
+        echo "driver: cannot reach \$h (no pbs_tmrsh); skipping" >&2
+    fi
+done
+for p in "\${pids[@]}"; do wait "\$p"; done
+DRIVER
+chmod +x "$WORKDIR/driver.sh"
+
+# ---------------------------------------------------------------------------
+# Run it under telemetry
+# ---------------------------------------------------------------------------
+
+echo "=========================================================================="
+echo " Running workload under telemetry"
+echo "=========================================================================="
+WORKLOAD_START=$(date +%s)
+
+# Exercised exactly the way a user is told to use it: source the library, then
+# bracket the workload. Testing a different invocation from the documented one
+# would leave the documented one untested.
+# shellcheck source=/dev/null
+source "$TELEMETRY_LIB"
+
+telemetry_start \
+    --output "$OUTDIR/psutil_{jobid}_{host}.log" \
+    --interval 0.5
+
+"$WORKDIR/driver.sh"
+WORKLOAD_STATUS=$?
+
+telemetry_stop
+
+WORKLOAD_END=$(date +%s)
+ELAPSED=$(( WORKLOAD_END - WORKLOAD_START ))
+
+echo
+echo "workload exited $WORKLOAD_STATUS after ${ELAPSED}s"
+echo
+
+echo "--- files this job produced ---"
+# Scoped to this job: the directory is shared with every previous run.
+ls -la "$OUTDIR"/psutil_"${PBS_JOBID:-local}"* 2>/dev/null | sed 's/^/  /'
+echo "  (directory holds $(ls -1 "$OUTDIR"/psutil_*.log 2>/dev/null | wc -l | tr -d ' ') job log(s) in total)"
+echo
+
+# ---------------------------------------------------------------------------
+# Verify
+# ---------------------------------------------------------------------------
+
+cat > "$WORKDIR/check.py" <<'CHECKER'
+import json, os, sys, glob
+
+outdir       = sys.argv[1]
+job_id       = sys.argv[2]
+n_nodes      = int(sys.argv[3])
+busy_cores   = int(sys.argv[4])
+busy_secs    = int(sys.argv[5])
+mem_mb       = int(sys.argv[6])
+cpus_per_node= int(sys.argv[7])
+wrapper_stat = int(sys.argv[8])
+fork_children= int(sys.argv[9])
+
+passed, failed, warned = [], [], []
+
+# Every glob is scoped to this job. The telemetry directory is shared with
+# every other job that has ever run, so an unscoped "*.log.summary.json" would
+# pick up previous runs and report them as this job's nodes.
+def job_glob(pattern):
+    return sorted(glob.glob(os.path.join(outdir, pattern.format(job=job_id))))
+def ok(m):   passed.append(m); print(f"  PASS  {m}")
+def bad(m):  failed.append(m); print(f"  FAIL  {m}")
+def warn(m): warned.append(m); print(f"  WARN  {m}")
+
+print("=" * 74)
+print(" Verification")
+print("=" * 74)
+
+# --- merged summary ---------------------------------------------------------
+print("\n--- merged job summary ---")
+merged_path = os.path.join(outdir, f"psutil_{job_id}.summary.json")
+merged = None
+if not os.path.exists(merged_path):
+    bad(f"merged summary missing: {merged_path}")
+else:
+    with open(merged_path) as f:
+        merged = json.load(f)
+    ok("merged summary written")
+    if merged.get("schema") == "merged-v1":
+        ok("merged summary carries schema marker 'merged-v1'")
+    else:
+        bad(f"schema marker is {merged.get('schema')!r}, expected 'merged-v1'")
+
+    got = merged.get("num_nodes_reporting", 0)
+    if got == n_nodes:
+        ok(f"all {n_nodes} node(s) reported")
+    else:
+        bad(f"only {got}/{n_nodes} nodes reported")
+
+    missing = merged.get("nodes_missing") or []
+    if missing:
+        bad(f"nodes that never reported: {missing}")
+    else:
+        ok("no missing nodes")
+
+    tot = merged.get("total_cpus", 0)
+    want = cpus_per_node * n_nodes
+    if tot == want:
+        ok(f"total_cpus == {want}")
+    else:
+        warn(f"total_cpus is {tot}, expected {want}")
+
+    if merged.get("exit_status") == 0:
+        ok("merged exit_status is 0")
+    else:
+        bad(f"merged exit_status is {merged.get('exit_status')!r} "
+            f"({merged.get('exit_reason')!r})")
+
+    lo = busy_cores * busy_secs * n_nodes * 0.80
+    hi = busy_cores * busy_secs * n_nodes * 1.60
+    cs = merged.get("cpu_core_seconds", 0.0)
+    if lo <= cs <= hi:
+        ok(f"cpu_core_seconds {cs:.0f} within expected {lo:.0f}-{hi:.0f}")
+    else:
+        bad(f"cpu_core_seconds {cs:.0f} OUTSIDE expected {lo:.0f}-{hi:.0f} "
+            f"(workload was {busy_cores} cores x {busy_secs}s x {n_nodes} nodes)")
+
+    pk_max = merged.get("cpu_pct_sum_peak_max_node", 0.0)
+    pk_sum = merged.get("cpu_pct_sum_peak_sum_of_nodes", 0.0)
+    if pk_sum >= pk_max > 0:
+        ok(f"peak bounds sane: max_node {pk_max:.0f}% <= sum_of_nodes {pk_sum:.0f}%")
+    else:
+        bad(f"peak bounds wrong: max_node {pk_max}, sum_of_nodes {pk_sum}")
+
+    if len(merged.get("per_node", [])) == n_nodes:
+        ok(f"per_node breakdown has {n_nodes} entries")
+    else:
+        bad(f"per_node has {len(merged.get('per_node', []))} entries, expected {n_nodes}")
+
+# --- per-node summaries -----------------------------------------------------
+print("\n--- per-node summaries ---")
+node_files = job_glob("psutil_{job}*.log.summary.json")
+if len(node_files) != n_nodes:
+    bad(f"found {len(node_files)} per-node summaries, expected {n_nodes}")
+else:
+    ok(f"found {n_nodes} per-node summaries")
+
+for path in node_files:
+    with open(path) as f:
+        s = json.load(f)
+    host = s.get("hostname", "?")
+    print(f"\n  [{host}]")
+
+    ver = s.get("cgroup_version", "")
+    if ver in ("cgroup-v1", "cgroup-v2"):
+        ok(f"{host}: cgroup detected ({ver})")
+    else:
+        bad(f"{host}: cgroup_version is {ver!r}")
+
+    # THE key check for the multi-node fix. A root cgroup path means the logger
+    # measured the whole node instead of the job.
+    path_used = s.get("cpuacct_path", "")
+    jobnum = "".join(c for c in job_id if c.isdigit()) or job_id
+    if jobnum and jobnum in path_used:
+        ok(f"{host}: cgroup path names the job ({path_used})")
+    elif path_used.rstrip("/").endswith(("cpuacct", "cpu,cpuacct", "cgroup")):
+        bad(f"{host}: cgroup path looks like the ROOT cgroup ({path_used}) — "
+            f"figures would describe the whole node, not this job")
+    else:
+        warn(f"{host}: cgroup path does not obviously name the job ({path_used})")
+
+    src = s.get("proc_source", "")
+    if src == "cgroup.procs":
+        ok(f"{host}: processes taken from cgroup.procs")
+    elif src == "process-tree":
+        warn(f"{host}: fell back to a process-tree walk "
+             f"(expected on the head node only)")
+    else:
+        bad(f"{host}: proc_source is {src!r}")
+
+    if s.get("samples", 0) > 0:
+        ok(f"{host}: {s['samples']} samples collected")
+    else:
+        bad(f"{host}: no samples collected")
+
+    ncpu = len(s.get("allowed_cpus", []))
+    if ncpu == cpus_per_node:
+        ok(f"{host}: allowed_cpus == {cpus_per_node}")
+    else:
+        warn(f"{host}: allowed_cpus is {ncpu}, expected {cpus_per_node}")
+
+    # Memory: the cgroup peak must have seen the allocation.
+    cg_peak = s.get("cgroup_mem_peak_bytes")
+    want_bytes = mem_mb * 1024 * 1024 * 0.8
+    if cg_peak is None:
+        warn(f"{host}: no cgroup memory figure (memory controller unavailable?)")
+    elif cg_peak >= want_bytes:
+        ok(f"{host}: cgroup peak memory {cg_peak/2**30:.1f} GB >= allocated {mem_mb/1024:.1f} GB")
+    else:
+        bad(f"{host}: cgroup peak memory {cg_peak/2**30:.2f} GB < allocated {mem_mb/1024:.1f} GB")
+
+    # Summed RSS should exceed the cgroup figure (it double-counts shared pages).
+    rss_peak = s.get("rss_bytes_peak", 0)
+    if cg_peak and rss_peak:
+        ratio = rss_peak / cg_peak
+        print(f"        (summed RSS peak is {ratio:.2f}x the cgroup figure — "
+              f"the shared-page double-count)")
+
+    # Phase 3 writes a known amount: FORK_CHILDREN x 4 MB.
+    #
+    # Whatever I/O figure we get must be in the right ballpark. An implausibly
+    # large one means the logger read a cgroup that is not the job's: Gadi does
+    # not delegate blkio, and reading the PBS daemon's cgroup previously yielded
+    # hundreds of GB for 800 MB of real work.
+    expected_write_mb = fork_children * 4
+    cg_io = s.get("cgroup_io_write_bytes_total")
+    legacy_io = s.get("io_write_bytes_total", 0)
+
+    if cg_io is None:
+        ok(f"{host}: no cgroup I/O figure — expected on Gadi, which does not "
+           f"delegate blkio to jobs; the per-process fallback is used instead")
+        if legacy_io > 0:
+            ok(f"{host}: per-process I/O fallback recorded {legacy_io/2**20:.0f} MB")
+        else:
+            warn(f"{host}: per-process I/O fallback recorded nothing either")
+    else:
+        io_mb = cg_io / 2**20
+        if io_mb > expected_write_mb * 50:
+            bad(f"{host}: cgroup I/O reports {io_mb:.0f} MB for a workload that wrote "
+                f"~{expected_write_mb} MB — that is not this job's cgroup")
+        elif cg_io > 0:
+            ok(f"{host}: cgroup I/O {io_mb:.0f} MB, plausible for ~{expected_write_mb} MB written")
+        else:
+            warn(f"{host}: cgroup write bytes is 0; did phase 3 run?")
+
+    if s.get("exit_status") == 0:
+        ok(f"{host}: exit_status 0")
+    else:
+        bad(f"{host}: exit_status {s.get('exit_status')!r} ({s.get('exit_reason')!r})")
+
+# --- NDJSON streams ---------------------------------------------------------
+print("\n--- NDJSON streams ---")
+for path in job_glob("psutil_{job}*.log"):
+    name = os.path.basename(path)
+    starts = logs = ends = 0
+    hosts = set()
+    bad_line = None
+    with open(path) as f:
+        for i, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+            except Exception as e:
+                bad_line = f"line {i}: {e}"
+                break
+            ev = o.get("event")
+            if ev == "job_start": starts += 1
+            elif ev == "job_log":
+                logs += 1
+                if o.get("hostname"): hosts.add(o["hostname"])
+            elif ev == "job_end": ends += 1
+
+    if bad_line:
+        bad(f"{name}: malformed NDJSON at {bad_line}")
+        continue
+    if starts == 1 and ends == 1 and logs > 0:
+        ok(f"{name}: {logs} samples, one job_start, one job_end")
+    else:
+        bad(f"{name}: job_start={starts} job_log={logs} job_end={ends}")
+    if len(hosts) == 1:
+        ok(f"{name}: all samples from a single node ({hosts.pop()})")
+    elif hosts:
+        bad(f"{name}: samples from multiple hosts {hosts} — files collided")
+
+# --- wrapper exit -----------------------------------------------------------
+print("\n--- wrapper ---")
+if wrapper_stat == 0:
+    ok("wrapper exited 0")
+else:
+    bad(f"wrapper exited {wrapper_stat}")
+
+# --- manifest ---------------------------------------------------------------
+print("\n--- manifest ---")
+manifest_path = os.path.join(outdir, f"psutil_{job_id}.manifest.json")
+if not os.path.exists(manifest_path):
+    warn("no manifest written — the dashboard will have to glob for this job's files")
+else:
+    with open(manifest_path) as f:
+        man = json.load(f)
+    ok("manifest written")
+
+    if man.get("nodes_expected") == n_nodes:
+        ok(f"manifest expects {n_nodes} node(s)")
+    else:
+        bad(f"manifest says {man.get('nodes_expected')} nodes, allocation had {n_nodes}")
+
+    # The contract that matters: the dashboard resolves these names against the
+    # manifest's directory. If they don't match what was written, it waits
+    # forever for files that never appear.
+    missing = [
+        e["log"] for e in man.get("files", [])
+        if not os.path.exists(os.path.join(outdir, e["log"]))
+    ]
+    if missing:
+        bad(f"manifest names files that do not exist: {missing}")
+    else:
+        ok("every file the manifest names exists on disk")
+
+    if any("/" in e.get("log", "") for e in man.get("files", [])):
+        bad("manifest contains paths rather than bare filenames")
+    else:
+        ok("manifest entries are bare filenames")
+
+print("\n" + "=" * 74)
+print(f" {len(passed)} passed, {len(failed)} failed, {len(warned)} warnings")
+print("=" * 74)
+if failed:
+    print("\nFAILURES:")
+    for m in failed:
+        print(f"  - {m}")
+if warned:
+    print("\nWARNINGS (not necessarily wrong):")
+    for m in warned:
+        print(f"  - {m}")
+
+sys.exit(1 if failed else 0)
+CHECKER
+
+python3 "$WORKDIR/check.py" \
+    "$OUTDIR" "${PBS_JOBID:-local}" "$NNODES" "$BUSY_CORES" "$BUSY_SECS" \
+    "$MEM_MB" "$NCPUS_PER_NODE" "$WORKLOAD_STATUS" "$FORK_CHILDREN"
+CHECK_STATUS=$?
+
+echo
+echo "=========================================================================="
+if [[ "$CHECK_STATUS" -eq 0 ]]; then
+    echo " RESULT: PASS"
+else
+    echo " RESULT: FAIL — see failures above"
+fi
+echo " Telemetry:    $OUTDIR"
+echo " Test scratch: $WORKDIR"
+echo
+echo " To view this job in the dashboard, point a profile's log_dirs at:"
+echo "     $OUTDIR"
+echo "=========================================================================="
+
+exit "$CHECK_STATUS"

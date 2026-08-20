@@ -1,0 +1,49 @@
+#%Module1.0
+#
+# Example modulefile for hpc-telemetry.
+#
+# Install as /g/data/gb02/modules/hpc-telemetry/<version> so that
+#
+#     module use /g/data/gb02/modules
+#     module load hpc-telemetry
+#
+# finds it. Note the distinction that trips people up: MODULEPATH
+# (/g/data/gb02/modules) holds *modulefiles*; the binary and the shell library
+# live somewhere else entirely, and it is this file that puts them on PATH.
+
+set version   0.2.0
+set prefix    /g/data/gb02/hpc-telemetry/$version
+
+module-whatis "Per-job resource telemetry for the HPC dashboard"
+
+proc ModulesHelp { } {
+    puts stderr "  module load hpc-telemetry"
+    puts stderr "  source hpc-telemetry.sh"
+    puts stderr ""
+    puts stderr "  telemetry_start"
+    puts stderr "      <your commands>"
+    puts stderr "  telemetry_stop"
+}
+
+# Both the binary and hpc-telemetry.sh must live here.
+#
+# They are a matched pair: the library invokes the binary by name from PATH, so
+# a prefix holding one but not the other loads cleanly and then fails at job
+# start with a confusing "not found".
+prepend-path PATH $prefix/bin
+
+# Belt and braces for `source hpc-telemetry.sh`.
+#
+# `source` with a bare filename searches PATH — bash's `sourcepath` option,
+# which is on by default — so the line above is normally enough. But a site or
+# a user can disable it with `shopt -u sourcepath`, and then sourcing fails,
+# telemetry_start is never defined, and calling it returns 127. Under `set -e`
+# that aborts the user's job over its own instrumentation, which is exactly the
+# outcome the library is written to avoid.
+#
+# Exporting the full path lets a cautious script write
+#
+#     source "${HPC_TELEMETRY_SH:-hpc-telemetry.sh}"
+#
+# which works either way.
+setenv HPC_TELEMETRY_SH $prefix/bin/hpc-telemetry.sh

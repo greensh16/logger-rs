@@ -1,0 +1,8 @@
+# Kept in step with `rust-version` in Cargo.toml.
+#
+# Clippy reads this to suppress suggestions that would require a newer
+# toolchain than the crate claims to support. Without it, MSRV-raising advice
+# arrives as a hard error under `-D warnings` and gets applied by reflex — which
+# is how this crate's minimum quietly moved twice before anyone decided it
+# should.
+msrv = "1.87"
