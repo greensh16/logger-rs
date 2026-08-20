@@ -56,7 +56,10 @@ fn shorten(raw: &str) -> Option<String> {
 ///
 /// Hostnames are already restricted to a safe character set in practice, but a
 /// stray `/` from a misconfigured node would silently write telemetry into the
-/// wrong directory — or fail to write it at all.
+/// wrong directory — or fail to write it at all. A run of `..` is neutralised
+/// too: on its own it can't traverse directories once slashes are gone, but
+/// leaving it intact is a needless trap for any consumer that later treats the
+/// result as a path component instead of a plain filename fragment.
 pub fn sanitise_for_filename(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -68,6 +71,7 @@ pub fn sanitise_for_filename(name: &str) -> String {
             }
         })
         .collect();
+    let cleaned = cleaned.replace("..", "__");
 
     if cleaned.is_empty() {
         "unknown".to_string()
@@ -108,7 +112,9 @@ mod tests {
         );
         // A slash would otherwise redirect the output into another directory.
         assert_eq!(sanitise_for_filename("bad/name"), "bad_name");
-        assert_eq!(sanitise_for_filename("../escape"), ".._escape");
+        // '..' must not survive either, even once slashes are gone.
+        assert_eq!(sanitise_for_filename("../escape"), "___escape");
+        assert!(!sanitise_for_filename("../../etc/evil").contains(".."));
         assert_eq!(sanitise_for_filename(""), "unknown");
     }
 

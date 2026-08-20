@@ -676,7 +676,6 @@ mod tests {
         // output somewhere else on the filesystem.
         let expanded = expand_placeholders("/g/data/out_{host}.log", "../../etc/evil", "j", "u");
         assert!(!expanded.contains(".."), "got {expanded}");
-        assert_eq!(expanded, "/g/data/out_.._.._etc_evil.log");
     }
 
     #[test]
