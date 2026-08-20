@@ -515,6 +515,7 @@ mod tests {
             interval: 0.5,
             gpu_interval: 5.0,
             outfile: Some(PathBuf::from("/tmp/out.log")),
+            check: false,
             merge: None,
             merge_expect_nodes: None,
             write_manifest: None,

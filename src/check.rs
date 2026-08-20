@@ -54,7 +54,8 @@ impl Report {
     }
 
     fn ok(&mut self, what: &str, detail: impl Into<String>) {
-        self.lines.push((Status::Ok, what.to_string(), detail.into()));
+        self.lines
+            .push((Status::Ok, what.to_string(), detail.into()));
     }
 
     fn warn(&mut self, what: &str, detail: impl Into<String>) {
@@ -304,8 +305,10 @@ fn check_controllers(r: &mut Report, cgroup: Option<&Cgroup>) {
         Some(mem) => {
             let limit = match mem.limit_bytes {
                 Some(b) => format!("booked {:.1} GB", b as f64 / 1024.0_f64.powi(3)),
-                None => String::from("no limit set — memory will be reported in GB, not as a \
-                                      fraction of what you booked"),
+                None => String::from(
+                    "no limit set — memory will be reported in GB, not as a \
+                                      fraction of what you booked",
+                ),
             };
             let peak = if mem.peak_bytes.is_some() {
                 ", kernel high-water mark available"
@@ -372,10 +375,7 @@ fn check_output(r: &mut Report, args: &Args) {
 
     if !dir.exists() {
         match fs::create_dir_all(dir) {
-            Ok(()) => r.ok(
-                "output directory",
-                format!("{} (created)", dir.display()),
-            ),
+            Ok(()) => r.ok("output directory", format!("{} (created)", dir.display())),
             Err(e) => {
                 r.fail(
                     "output directory",
