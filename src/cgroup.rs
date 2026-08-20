@@ -725,9 +725,9 @@ fn walk_up_to_probe(root: &Path, rel: &str, probe: &str) -> Option<PathBuf> {
         if candidate.as_path() == root {
             return None;
         }
-        match candidate.parent() {
-            Some(parent) => candidate = parent.to_path_buf(),
-            None => return None,
+        {
+            let parent = candidate.parent()?;
+            candidate = parent.to_path_buf()
         }
     }
 }
