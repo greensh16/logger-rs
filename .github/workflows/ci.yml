@@ -81,7 +81,7 @@ jobs:
 
       - name: Verify the binary is actually static
         run: |
-          BIN=target/x86_64-unknown-linux-musl/release/hpc-telemetry
+          BIN=target/x86_64-unknown-linux-musl/release/logger-rs
           file "$BIN"
           # A dynamically linked binary would fail to run on Gadi's compute
           # nodes if their glibc differs from the build host's.
@@ -93,7 +93,7 @@ jobs:
 
       - name: Smoke test the CLI
         run: |
-          BIN=target/x86_64-unknown-linux-musl/release/hpc-telemetry
+          BIN=target/x86_64-unknown-linux-musl/release/logger-rs
           "$BIN" --help
           "$BIN" --version
           # Invalid intervals must be rejected rather than silently spinning.
@@ -104,8 +104,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: hpc-telemetry-x86_64-musl
-          path: target/x86_64-unknown-linux-musl/release/hpc-telemetry
+          name: logger-rs-x86_64-musl
+          path: target/x86_64-unknown-linux-musl/release/logger-rs
           if-no-files-found: error
 
   shellcheck:
@@ -119,9 +119,9 @@ jobs:
           # --severity=warning skips info-level style notes, notably SC2317
           # ("unreachable command"), which fires spuriously on functions that
           # are only ever invoked from a trap — exactly how _ht_on_exit works
-          # in hpc-telemetry.sh.
+          # in logger-rs.sh.
           #
-          # -x follows `source`d files; hpc-telemetry.sh is only ever sourced,
+          # -x follows `source`d files; logger-rs.sh is only ever sourced,
           # so shellcheck is told which shell it targets rather than guessing
           # from a missing shebang context.
-          shellcheck --severity=warning --shell=bash hpc-telemetry.sh build-linux.sh
+          shellcheck --severity=warning --shell=bash logger-rs.sh build-linux.sh

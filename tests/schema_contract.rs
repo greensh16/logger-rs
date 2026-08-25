@@ -12,7 +12,7 @@
 //! If a test fails, the fix is either to restore the field or to update this
 //! list *and* the dashboard parser together.
 
-use hpc_telemetry::types::{
+use logger_rs::types::{
     JobManifest, ManifestEntry, MergedSummary, TelemetrySample, TelemetrySummary,
 };
 use serde_json::Value;
@@ -356,7 +356,7 @@ fn merged_summary() -> MergedSummary {
     node_b.duration_sec = 100.0;
     node_b.cpu_core_seconds = 3000.0;
 
-    hpc_telemetry::merge::merge_summaries(
+    logger_rs::merge::merge_summaries(
         &[node_a, node_b],
         &[
             "gadi-cpu-clx-0123".to_string(),
@@ -379,7 +379,7 @@ fn summary_schema_is_stable() {
 }
 
 fn manifest() -> JobManifest {
-    hpc_telemetry::manifest::build_manifest(
+    logger_rs::manifest::build_manifest(
         "12345.gadi-pbs",
         "sam",
         "normal",
@@ -408,7 +408,7 @@ fn manifest_is_findable_from_the_job_id_alone() {
     // The reason the manifest exists: the poller must be able to construct the
     // filename without listing or globbing the directory.
     assert_eq!(
-        hpc_telemetry::manifest::manifest_filename("12345.gadi-pbs"),
+        logger_rs::manifest::manifest_filename("12345.gadi-pbs"),
         "psutil_12345.gadi-pbs.manifest.json"
     );
 

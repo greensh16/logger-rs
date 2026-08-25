@@ -613,7 +613,7 @@ mod tests {
         // because the README said --output while the CLI only accepted
         // --outfile, and because --summary and --tree-pid were required.
         let args = Args::try_parse_from([
-            "hpc-telemetry",
+            "logger-rs",
             "--output",
             "/g/data/ab12/dashboard/user/psutil_123.log",
             "--interval",
@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_cli_accepts_outfile_spelling_too() {
-        let args = Args::try_parse_from(["hpc-telemetry", "--outfile", "/tmp/x.log"])
+        let args = Args::try_parse_from(["logger-rs", "--outfile", "/tmp/x.log"])
             .expect("--outfile must still work");
         assert_eq!(args.outfile, Some(PathBuf::from("/tmp/x.log")));
     }

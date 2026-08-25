@@ -1,4 +1,4 @@
-//! Preflight check: `hpc-telemetry --check`.
+//! Preflight check: `logger-rs --check`.
 //!
 //! Answers "will this actually collect anything if I submit the job?" in a few
 //! seconds, inside an interactive session, instead of after a queue wait.
@@ -98,7 +98,7 @@ impl Report {
 pub fn run(args: &Args) -> i32 {
     let mut r = Report::new();
 
-    println!("hpc-telemetry preflight check");
+    println!("logger-rs preflight check");
     println!("{}", "-".repeat(72));
 
     check_scheduler_env(&mut r);
@@ -106,6 +106,7 @@ pub fn run(args: &Args) -> i32 {
     check_controllers(&mut r, cgroup.as_ref());
     check_output(&mut r, args);
     check_gpu(&mut r);
+    check_binary(&mut r);
 
     print!("{}", r.render());
     println!("{}", "-".repeat(72));
@@ -186,7 +187,7 @@ fn check_scheduler_env(r: &mut Report) {
 /// `PBS_RESOURCE_LIST_walltime`, `PBS_WALLTIME` or `PBS_RESOURCE_walltime` are
 /// exported, the same gap that forced booked *memory* to be read from the
 /// cgroup. Unlike memory there is no kernel-side source, so the scheduler is
-/// the only place it exists and `hpc-telemetry.sh` asks `qstat` for it.
+/// the only place it exists and `logger-rs.sh` asks `qstat` for it.
 ///
 /// Worth reporting because the failure is silent and the consequence is subtle:
 /// without it `booked_walltime_sec` is 0, and "used 5% of your booking" becomes
@@ -216,7 +217,7 @@ fn check_booked_walltime(r: &mut Report) {
         r.ok(
             "booked walltime",
             "not in the environment (normal on Gadi), but qstat is available — \
-             hpc-telemetry.sh will read it from the scheduler",
+             logger-rs.sh will read it from the scheduler",
         );
     } else {
         r.warn(
@@ -392,7 +393,7 @@ fn check_output(r: &mut Report, args: &Args) {
     }
 
     // Existence is not permission: a directory can be listable and not writable.
-    let probe = dir.join(format!(".hpc-telemetry-check-{}", std::process::id()));
+    let probe = dir.join(format!(".logger-rs-check-{}", std::process::id()));
     match fs::write(&probe, b"") {
         Ok(()) => {
             let _ = fs::remove_file(&probe);
@@ -425,6 +426,65 @@ fn check_output(r: &mut Report, args: &Args) {
 fn is_probably_unshared(dir: &Path) -> bool {
     let s = dir.to_string_lossy();
     s.starts_with("/tmp") || s.starts_with("/var/tmp") || s.starts_with("/jobfs")
+}
+
+/// Where this binary lives, and whether the other nodes could run it.
+///
+/// A multi-node job starts remote loggers through `pbs_tmrsh`/`pbsdsh`/`srun`,
+/// all of which hand the command to `execv` — which does not search `PATH`.
+/// The launcher script resolves an absolute path before launching for exactly
+/// that reason, but an absolute path on node-local storage fails just as
+/// completely, and only on the remote nodes. The symptom is
+/// `Could not execv ... errno=2` in the job's stderr and telemetry from the
+/// mother superior alone, which reads as "telemetry is broken" rather than
+/// "this path is not shared".
+fn check_binary(r: &mut Report) {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            r.warn("binary", format!("could not determine own path: {e}"));
+            return;
+        }
+    };
+
+    if is_probably_unshared(&exe) {
+        r.warn(
+            "binary",
+            format!(
+                "{} is on node-local storage. Other nodes cannot execute it, so a \
+                 multi-node job would measure only this node. Install it on /g/data \
+                 or /scratch.",
+                exe.display()
+            ),
+        );
+    } else {
+        r.ok("binary", exe.display().to_string());
+    }
+
+    // On Gadi a /g/data path is only mounted inside the job if the matching
+    // project was requested. Without it the binary is invisible on every node,
+    // including this one — but a user running --check interactively on a login
+    // node, where /g/data is always mounted, would not discover that.
+    if let Some(project) = exe
+        .to_string_lossy()
+        .strip_prefix("/g/data/")
+        .and_then(|rest| rest.split('/').next())
+        .map(str::to_string)
+    {
+        let in_job = std::env::var("PBS_O_WORKDIR").is_ok();
+        r.ok(
+            "binary",
+            format!(
+                "lives under /g/data/{project}; the job needs -l storage=gdata/{project} \
+                 for any node to run it{}",
+                if in_job {
+                    ""
+                } else {
+                    " (not checkable from outside a job)"
+                }
+            ),
+        );
+    }
 }
 
 fn check_gpu(r: &mut Report) {

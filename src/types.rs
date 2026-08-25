@@ -188,7 +188,7 @@ pub struct TelemetrySummary {
     pub project: String,
 
     /// Short hostname of the node this summary describes. Every figure below is
-    /// for this node alone; `hpc-telemetry --merge` combines them across nodes.
+    /// for this node alone; `logger-rs --merge` combines them across nodes.
     #[serde(default)]
     pub hostname: String,
     /// Index of this node within the job's allocation, when known.
@@ -555,7 +555,7 @@ pub struct NodeSummary {
     pub exit_status: Option<i32>,
 }
 
-/// A whole job, combined from the per-node summaries by `hpc-telemetry --merge`.
+/// A whole job, combined from the per-node summaries by `logger-rs --merge`.
 ///
 /// **On combining peaks.** Sums of rates and totals (core-seconds, bytes) are
 /// exact: they are additive regardless of when each node was busy. Peaks are

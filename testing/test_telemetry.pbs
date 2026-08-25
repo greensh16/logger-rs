@@ -13,7 +13,7 @@
 # Without it the telemetry directory below is simply not there, and the run
 # fails at preflight rather than silently writing nowhere useful.
 #
-# End-to-end test of hpc-telemetry on Gadi.
+# End-to-end test of logger-rs on Gadi.
 #
 # ncpus=96 on the normal queue is 2 nodes of 48 cores, which is the smallest
 # allocation that actually exercises the multi-node paths. For a single-node
@@ -43,8 +43,8 @@ set -uo pipefail
 # Configuration
 # ---------------------------------------------------------------------------
 
-TELEMETRY_BIN="${TELEMETRY_BIN:-$HOME/bin/hpc-telemetry}"
-TELEMETRY_LIB="${TELEMETRY_LIB:-$HOME/bin/hpc-telemetry.sh}"
+TELEMETRY_BIN="${TELEMETRY_BIN:-$HOME/bin/logger-rs}"
+TELEMETRY_LIB="${TELEMETRY_LIB:-$HOME/bin/logger-rs.sh}"
 
 # Telemetry goes where the dashboard reads from. This is a *shared* directory
 # holding every job's files, not a per-run scratch area — which is exactly what
@@ -79,7 +79,7 @@ if [[ ! -w "$OUTDIR" ]]; then
 fi
 
 echo "=========================================================================="
-echo " hpc-telemetry test"
+echo " logger-rs test"
 echo "=========================================================================="
 echo "  job id      : ${PBS_JOBID:-<none>}"
 echo "  telemetry   : $OUTDIR  (shared — the dashboard reads this)"

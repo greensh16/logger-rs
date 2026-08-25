@@ -1,6 +1,6 @@
 [package]
-name = "hpc-telemetry"
-version = "0.2.0"
+name = "logger-rs"
+version = "0.2.1"
 edition = "2021"
 authors = ["HPC Dashboard Team"]
 description = "High-performance telemetry logger for HPC jobs (cgroup v1 and v2)"
@@ -45,11 +45,11 @@ tempfile = "3.10"         # Testing with temp files
 # integration tests in tests/ (notably the NDJSON schema contract test) depend on
 # the same types the binary emits.
 [lib]
-name = "hpc_telemetry"
+name = "logger_rs"
 path = "src/lib.rs"
 
 [[bin]]
-name = "hpc-telemetry"
+name = "logger-rs"
 path = "src/main.rs"
 
 [profile.release]

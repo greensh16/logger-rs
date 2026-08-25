@@ -8,7 +8,7 @@
 set -euo pipefail
 
 TARGET="x86_64-unknown-linux-musl"
-BIN_NAME="hpc-telemetry"
+BIN_NAME="logger-rs"
 TARGET_BIN="target/${TARGET}/release/${BIN_NAME}"
 
 echo "Building ${BIN_NAME} for ${TARGET}..."
@@ -53,14 +53,14 @@ Ready to deploy. Stage the binary and the shell library together — they are
 versioned as a pair, and a module that puts one on PATH without the other
 fails at job start with a confusing "not found":
 
-  scp ${TARGET_BIN} hpc-telemetry.sh \\
-      gadi.nci.org.au:/g/data/gb02/hpc-telemetry/<version>/bin/
+  scp ${TARGET_BIN} logger-rs.sh \\
+      gadi.nci.org.au:/g/data/gb02/logger-rs/<version>/bin/
 
 Then point the modulefile at the new version. In a PBS job script users write:
 
   module use /g/data/gb02/modules
-  module load hpc-telemetry
-  source hpc-telemetry.sh
+  module load logger-rs
+  source logger-rs.sh
 
   telemetry_start
       <your commands>

@@ -5,8 +5,8 @@
 # Usage:
 #
 #   module use /g/data/gb02/modules
-#   module load hpc-telemetry
-#   source hpc-telemetry.sh
+#   module load logger-rs
+#   source logger-rs.sh
 #
 #   cp -r /g/data/ab12/inputs "$PBS_JOBFS"/      # not measured
 #
@@ -26,7 +26,7 @@
 #                        or the working directory if that is unset)
 #   --interval SECS      Sampling interval (default: 0.5)
 #   --gpu-interval SECS  GPU polling interval (default: 5.0)
-#   --telemetry-bin PATH hpc-telemetry binary (default: found on $PATH)
+#   --telemetry-bin PATH logger-rs binary (default: found on $PATH)
 #   --single-node        Only measure this node, even on a multi-node job
 #   --no-merge           Skip the job-level merge at the end
 #
@@ -55,9 +55,9 @@
 # This file is a library. Executing it does nothing useful.
 # ---------------------------------------------------------------------------
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    echo "hpc-telemetry.sh is meant to be sourced, not executed:" >&2
+    echo "logger-rs.sh is meant to be sourced, not executed:" >&2
     echo "" >&2
-    echo "    source hpc-telemetry.sh" >&2
+    echo "    source logger-rs.sh" >&2
     echo "    telemetry_start" >&2
     echo "    <your commands>" >&2
     echo "    telemetry_stop" >&2
@@ -87,12 +87,13 @@ _HT_BOOKED_WALLTIME=""
 _HT_EXIT_STATUS_FILE=""
 _HT_LOCAL_PID=""
 _HT_LAUNCHER_PIDS=()
+_HT_LAUNCHER_HOSTS=()
 _HT_NODES=()
 _HT_NODES_FULL=()
 _HT_NUM_NODES=0
 
 _ht_warn() {
-    echo "hpc-telemetry: $*" >&2
+    echo "logger-rs: $*" >&2
 }
 
 # The booked walltime, which PBS does not put in the environment.
@@ -183,6 +184,7 @@ _ht_start_logger_remote() {
             --node-rank "$rank" \
             --exit-status-file "$_HT_EXIT_STATUS_FILE" &
         _HT_LAUNCHER_PIDS+=($!)
+        _HT_LAUNCHER_HOSTS+=("$host")
     elif command -v pbsdsh >/dev/null 2>&1; then
         pbsdsh -n "$rank" -- \
             "$_HT_BIN" \
@@ -195,6 +197,7 @@ _ht_start_logger_remote() {
             --node-rank "$rank" \
             --exit-status-file "$_HT_EXIT_STATUS_FILE" &
         _HT_LAUNCHER_PIDS+=($!)
+        _HT_LAUNCHER_HOSTS+=("$host")
     elif command -v srun >/dev/null 2>&1; then
         srun --nodes=1 --ntasks=1 --nodelist="$host" --overlap \
             "$_HT_BIN" \
@@ -207,6 +210,7 @@ _ht_start_logger_remote() {
             --node-rank "$rank" \
             --exit-status-file "$_HT_EXIT_STATUS_FILE" &
         _HT_LAUNCHER_PIDS+=($!)
+        _HT_LAUNCHER_HOSTS+=("$host")
     else
         _ht_warn "no pbs_tmrsh, pbsdsh or srun; cannot measure $host"
     fi
@@ -221,7 +225,7 @@ telemetry_start() {
         return 0
     fi
 
-    _HT_BIN="${TELEMETRY_BIN:-hpc-telemetry}"
+    _HT_BIN="${TELEMETRY_BIN:-logger-rs}"
     _HT_INTERVAL="0.5"
     _HT_GPU_INTERVAL="5.0"
     _HT_OUTPUT=""
@@ -229,6 +233,7 @@ telemetry_start() {
     _HT_DO_MERGE=1
     _HT_LOCAL_PID=""
     _HT_LAUNCHER_PIDS=()
+    _HT_LAUNCHER_HOSTS=()
     _HT_NODES=()
     _HT_NODES_FULL=()
     _HT_NUM_NODES=0
@@ -265,10 +270,54 @@ telemetry_start() {
     # From here on, every failure returns 0. Telemetry must never be the reason
     # a job fails — the caller is a user's production script, and `set -e` is
     # common, so a non-zero return here would abort it.
-    if ! command -v "$_HT_BIN" >/dev/null 2>&1 && [[ ! -x "$_HT_BIN" ]]; then
+    # Resolve to an ABSOLUTE path before anything else uses it.
+    #
+    # This must not stay a bare command name. The local logger is started by
+    # bash, which searches PATH, so a bare name works here — but every remote
+    # node is reached through pbs_tmrsh/pbsdsh/srun, and those hand the command
+    # straight to execv(). execv does not search PATH. A bare name therefore
+    # fails on every remote node with:
+    #
+    #     ERROR: Could not execv logger-rs! ret=-1 errno=2
+    #
+    # (errno 2 is ENOENT), leaving a multi-node job with telemetry from the
+    # mother superior only — one log file where there should be N, and a
+    # manifest promising nodes that never wrote anything.
+    #
+    # Even where PATH would nominally be inherited it cannot be relied on: the
+    # remote environment is not the job script's, so a PATH entry added by
+    # `module load` in the submitting shell is not necessarily present there.
+    # Resolving here means the module only has to be loadable on this node.
+    _ht_resolved=""
+    if [[ "$_HT_BIN" == */* ]]; then
+        # Already a path — make it absolute, since the remote node's working
+        # directory is not guaranteed to be this one.
+        if [[ -x "$_HT_BIN" ]]; then
+            _ht_resolved="$(cd "$(dirname "$_HT_BIN")" 2>/dev/null && pwd)/$(basename "$_HT_BIN")"
+        fi
+    else
+        _ht_resolved="$(command -v "$_HT_BIN" 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$_ht_resolved" || ! -x "$_ht_resolved" ]]; then
         _ht_warn "binary '$_HT_BIN' not found; continuing WITHOUT telemetry."
-        _ht_warn "  on Gadi: module use /g/data/gb02/modules && module load hpc-telemetry"
+        _ht_warn "  on Gadi: module use /g/data/gb02/modules && module load logger-rs"
+        unset _ht_resolved
         return 0
+    fi
+    _HT_BIN="$_ht_resolved"
+    unset _ht_resolved
+
+    # A binary the other nodes cannot see fails exactly like a missing one, but
+    # only on the remote nodes, and only at launch — which reads as "telemetry
+    # is broken" rather than "this path is node-local". Worth naming up front.
+    if [[ "$_HT_SINGLE_NODE" -eq 0 ]]; then
+        case "$_HT_BIN" in
+            /tmp/*|/var/tmp/*|/dev/shm/*|/local/*|"${PBS_JOBFS:-/nonexistent-jobfs}"/*)
+                _ht_warn "'$_HT_BIN' looks node-local; other nodes will not see it."
+                _ht_warn "  put it on shared storage (/g/data or /scratch) for multi-node jobs."
+                ;;
+        esac
     fi
 
     _HT_OUTPUT_DIR="$(dirname "$_HT_OUTPUT")"
@@ -309,9 +358,9 @@ telemetry_start() {
     # loggers on remote nodes to shut down, because pbsdsh and srun do not
     # reliably forward SIGTERM to the tasks they launched.
     if [[ "$_HT_NUM_NODES" -gt 1 ]]; then
-        _HT_EXIT_STATUS_FILE="${_HT_OUTPUT_DIR}/.hpc-telemetry-exit_${_HT_JOB_ID}"
+        _HT_EXIT_STATUS_FILE="${_HT_OUTPUT_DIR}/.logger-rs-exit_${_HT_JOB_ID}"
     else
-        _HT_EXIT_STATUS_FILE="$(mktemp "${TMPDIR:-/tmp}/hpc-telemetry-exit.XXXXXX")"
+        _HT_EXIT_STATUS_FILE="$(mktemp "${TMPDIR:-/tmp}/logger-rs-exit.XXXXXX")"
     fi
     rm -f "$_HT_EXIT_STATUS_FILE"
 
@@ -358,6 +407,45 @@ telemetry_start() {
         _ht_warn "the logger failed to start; continuing WITHOUT telemetry"
         _HT_LOCAL_PID=""
         return 0
+    fi
+
+    # Same check for the remote nodes, in the background.
+    #
+    # A remote launch that fails does so immediately — pbs_tmrsh/pbsdsh/srun
+    # exit as soon as the exec fails — whereas a successful one stays alive for
+    # the duration of the job, holding the remote logger. So "still running a
+    # few seconds later" separates the two cleanly.
+    #
+    # Until this existed the only report of a failed remote launch was the
+    # scheduler's own `Could not execv` line, buried in the job's stderr among
+    # the workload's output, plus a merge warning hours later when the job
+    # ended. On an 8-node job that meant discovering at the end that 7 nodes had
+    # measured nothing.
+    #
+    # Backgrounded so the user's workload starts immediately: this is a
+    # diagnostic, and it must not put a delay between telemetry_start and the
+    # science. Output arrives a few seconds into the job, labelled.
+    #
+    # `disown` keeps bash from reporting the subshell in job-control output. The
+    # subshell deliberately inherits stderr — that is where the warning has to
+    # land for the user to ever see it.
+    if [[ "${#_HT_LAUNCHER_PIDS[@]}" -gt 0 ]]; then
+        (
+            sleep 5
+            _dead=()
+            for _k in "${!_HT_LAUNCHER_PIDS[@]}"; do
+                kill -0 "${_HT_LAUNCHER_PIDS[$_k]}" 2>/dev/null && continue
+                _dead+=("${_HT_LAUNCHER_HOSTS[$_k]:-?}")
+            done
+            if [[ "${#_dead[@]}" -gt 0 ]]; then
+                _ht_warn "${#_dead[@]} of ${#_HT_LAUNCHER_PIDS[@]} remote logger(s) failed to start: ${_dead[*]}"
+                _ht_warn "  this node is still being measured; those nodes are not."
+                _ht_warn "  the usual cause is the binary not being visible on the other nodes —"
+                _ht_warn "  check the job's stderr for 'Could not execv', and that '$_HT_BIN'"
+                _ht_warn "  is on storage the whole job can read (-l storage=gdata/<proj>)."
+            fi
+        ) &
+        disown 2>/dev/null || true
     fi
 
     _HT_ACTIVE=1

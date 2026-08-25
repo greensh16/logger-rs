@@ -1,11 +1,11 @@
 # Build and publish an HPC-ready release when a tag is pushed.
 #
-#   git tag -a v0.2.0 -m "..." && git push origin v0.2.0
+#   git tag -a v0.2.1 -m "..." && git push origin v0.2.1
 #
 # Produces one tarball that unpacks straight into the module tree documented in
 # examples/modulefile, plus a SHA256 to check the transfer to Gadi.
 #
-# Why a tarball rather than a bare binary: the binary and hpc-telemetry.sh are a
+# Why a tarball rather than a bare binary: the binary and logger-rs.sh are a
 # matched pair. The library invokes the binary by name from PATH, so a prefix
 # holding one but not the other loads cleanly through `module load` and then
 # fails at job start with a confusing "not found". Shipping them separately
@@ -85,7 +85,7 @@ jobs:
       - name: Verify the binary is static and runs
         run: |
           set -euo pipefail
-          BIN="target/$TARGET/release/hpc-telemetry"
+          BIN="target/$TARGET/release/logger-rs"
           file "$BIN"
           if file "$BIN" | grep -q "dynamically linked"; then
             echo "::error::binary is dynamically linked; it would not run on Gadi's compute nodes"
@@ -95,7 +95,7 @@ jobs:
           "$BIN" --help > /dev/null
 
           # The reported version must match what we are publishing, or
-          # `hpc-telemetry --version` on Gadi will not identify the release it
+          # `logger-rs --version` on Gadi will not identify the release it
           # came from.
           REPORTED=$("$BIN" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
           if [[ "$REPORTED" != "${{ steps.version.outputs.cargo_version }}" ]]; then
@@ -106,7 +106,7 @@ jobs:
       - name: Shellcheck the shipped library
         run: |
           sudo apt-get install -y shellcheck
-          shellcheck --severity=warning --shell=bash hpc-telemetry.sh
+          shellcheck --severity=warning --shell=bash logger-rs.sh
 
       # Laid out to match examples/modulefile, so installing is one `tar -xzf`
       # into the version directory the modulefile already points at.
@@ -115,12 +115,12 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
-          STAGE="hpc-telemetry-${VERSION}"
+          STAGE="logger-rs-${VERSION}"
           TARBALL="${STAGE}-x86_64-linux-musl.tar.gz"
 
           mkdir -p "$STAGE/bin" "$STAGE/examples"
-          cp "target/$TARGET/release/hpc-telemetry" "$STAGE/bin/"
-          cp hpc-telemetry.sh                       "$STAGE/bin/"
+          cp "target/$TARGET/release/logger-rs" "$STAGE/bin/"
+          cp logger-rs.sh                       "$STAGE/bin/"
           cp examples/gadi-job.pbs examples/modulefile "$STAGE/examples/"
           cp README.md "$STAGE/"
           # Permissions are set explicitly rather than inherited, because this
@@ -133,10 +133,10 @@ jobs:
           # a+rX: readable by all, executable only where it already is, plus
           # directories so they can be traversed.
           chmod -R a+rX "$STAGE"
-          chmod 755 "$STAGE/bin/hpc-telemetry"
+          chmod 755 "$STAGE/bin/logger-rs"
           # Sourced, never executed — but an unreadable file breaks `source`
           # just as thoroughly as a missing one.
-          chmod 644 "$STAGE/bin/hpc-telemetry.sh"
+          chmod 644 "$STAGE/bin/logger-rs.sh"
 
           tar -czf "$TARBALL" "$STAGE"
           sha256sum "$TARBALL" > "${TARBALL}.sha256"
@@ -159,15 +159,15 @@ jobs:
           export PATH="$TMP/prefix/bin:$PATH"
           export PBS_JOBID="ci-test"
 
-          hpc-telemetry --version
+          logger-rs --version
           # --check runs on a half-configured system by design, and CI is one:
           # no cgroup scope, so it is expected to report problems. What matters
           # is that it runs and produces a report rather than crashing.
-          hpc-telemetry --check || true
+          logger-rs --check || true
 
           cd "$TMP"
           # shellcheck source=/dev/null
-          source hpc-telemetry.sh
+          source logger-rs.sh
           if ! declare -F telemetry_start > /dev/null; then
             echo "::error::telemetry_start not defined after sourcing the packaged library"
             exit 1
@@ -190,7 +190,7 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          name: hpc-telemetry ${{ steps.version.outputs.version }}
+          name: logger-rs ${{ steps.version.outputs.version }}
           generate_release_notes: true
           files: |
             ${{ steps.stage.outputs.tarball }}
@@ -199,19 +199,46 @@ jobs:
             Static `x86_64` Linux build (musl), for Gadi and any other
             `x86_64` Linux HPC. No runtime dependencies.
 
+            ### ⚠️ Renamed from `hpc-telemetry`
+
+            The binary, the module and the sourced library are now all called
+            `logger-rs`, matching the repository. **Existing job scripts need
+            two lines changed:**
+
+            ```diff
+            - module load hpc-telemetry
+            - source hpc-telemetry.sh
+            + module load logger-rs
+            + source logger-rs.sh
+            ```
+
+            `telemetry_start` and `telemetry_stop` are unchanged, so the body of
+            your script does not move.
+
+            ### Fixed in this release
+
+            Remote loggers failed to start on every node but the first. The
+            launcher passed a bare command name to `pbs_tmrsh`/`pbsdsh`, which
+            hand it to `execv()` — and `execv` does not search `PATH`. A
+            multi-node job therefore recorded only its mother superior, with
+            `Could not execv ... errno=2` buried in the job's stderr. The
+            launcher now resolves an absolute path before launching, warns if
+            that path is node-local, and reports failed remote launches a few
+            seconds into the job rather than at the end.
+
             ### Install into the module tree
 
             ```bash
             VERSION=${{ steps.version.outputs.version }}
-            PREFIX=/g/data/gb02/hpc-telemetry/$VERSION
+            PREFIX=/g/data/gb02/logger-rs/$VERSION
 
             mkdir -p "$PREFIX"
-            tar -xzf hpc-telemetry-$VERSION-x86_64-linux-musl.tar.gz \
+            tar -xzf logger-rs-$VERSION-x86_64-linux-musl.tar.gz \
                 -C "$PREFIX" --strip-components=1
             ```
 
-            That gives `$PREFIX/bin/hpc-telemetry` and
-            `$PREFIX/bin/hpc-telemetry.sh` — the layout `examples/modulefile`
+            That gives `$PREFIX/bin/logger-rs` and
+            `$PREFIX/bin/logger-rs.sh` — the layout `examples/modulefile`
             expects. Point the modulefile at the new version and users pick it
             up on their next `module load`.
 
@@ -221,13 +248,13 @@ jobs:
 
             ```bash
             module use /g/data/gb02/modules
-            module load hpc-telemetry
-            source hpc-telemetry.sh
+            module load logger-rs
+            source logger-rs.sh
 
             telemetry_start
                 <your commands>
             telemetry_stop
             ```
 
-            Run `hpc-telemetry --check` inside a short interactive job first to
+            Run `logger-rs --check` inside a short interactive job first to
             confirm what can be measured on the node.

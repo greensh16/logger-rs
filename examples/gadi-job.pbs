@@ -24,8 +24,8 @@
 set -euo pipefail
 
 module use /g/data/gb02/modules
-module load hpc-telemetry
-source hpc-telemetry.sh
+module load logger-rs
+source logger-rs.sh
 
 # Where the telemetry lands. It must be on a filesystem listed in storage=
 # above, and for a multi-node job it must be *shared* — each node writes its
@@ -78,8 +78,8 @@ telemetry_stop
 #
 #   qsub -I -P ab12 -q normal -l ncpus=4,mem=16GB,walltime=00:10:00 \
 #        -l storage=gdata/ab12
-#   module use /g/data/gb02/modules && module load hpc-telemetry
-#   hpc-telemetry --check
+#   module use /g/data/gb02/modules && module load logger-rs
+#   logger-rs --check
 #
 # That reports what can and cannot be measured here — cgroup scope, which
 # controllers the job actually owns, whether the output path is writable — in

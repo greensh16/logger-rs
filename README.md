@@ -2,7 +2,7 @@
 
 High-performance telemetry collection for HPC jobs, written in Rust.
 
-**`hpc-telemetry`** samples a job's resource usage from its cgroup and writes
+**`logger-rs`** samples a job's resource usage from its cgroup and writes
 NDJSON to a file on gdata. The dashboard watcher on Nirin reads those files
 directly — there is no HTTP streaming component.
 
@@ -16,8 +16,8 @@ Put two lines around the part of your job script you want measured:
 
 ```bash
 module use /g/data/gb02/modules
-module load hpc-telemetry
-source hpc-telemetry.sh
+module load logger-rs
+source logger-rs.sh
 
 ./stage-inputs.sh                            # setup — not measured
 
@@ -45,15 +45,15 @@ The output path defaults to `$HPC_DASHBOARD_DIR` (or the working directory), so
 A complete, commented job script is in
 [`examples/gadi-job.pbs`](examples/gadi-job.pbs) — copy it and change four lines.
 
-### How `source hpc-telemetry.sh` finds the file
+### How `source logger-rs.sh` finds the file
 
 `source` with a bare filename searches `$PATH` (bash's `sourcepath` option, on
 by default), and `PATH` takes precedence over the working directory, so a
 stray local file of the same name cannot shadow it. The modulefile puts the
 install directory on `PATH`, so nothing else is needed.
 
-`hpc-telemetry.sh` therefore has to sit **in the same `bin/` directory as the
-`hpc-telemetry` binary** — the one the modulefile prepends. Not in
+`logger-rs.sh` therefore has to sit **in the same `bin/` directory as the
+`logger-rs` binary** — the one the modulefile prepends. Not in
 `/g/data/gb02/modules`: that is `MODULEPATH`, which holds modulefiles, and
 `module use` never adds it to `PATH`. See
 [`examples/modulefile`](examples/modulefile).
@@ -61,10 +61,10 @@ install directory on `PATH`, so nothing else is needed.
 If your site disables `sourcepath`, the bare form fails, `telemetry_start` is
 never defined, and calling it returns 127 — which under `set -e` would abort
 the job over its own instrumentation. The modulefile also exports
-`HPC_TELEMETRY_SH`, so a script that wants to be certain can write:
+`LOGGER_RS_SH`, so a script that wants to be certain can write:
 
 ```bash
-source "${HPC_TELEMETRY_SH:-hpc-telemetry.sh}"
+source "${LOGGER_RS_SH:-logger-rs.sh}"
 ```
 
 ### telemetry_stop is optional
@@ -89,7 +89,7 @@ better than not running.
 ### Check it will work before you queue
 
 ```bash
-hpc-telemetry --check
+logger-rs --check
 ```
 
 Run inside a short interactive job. It reports the cgroup version and scope,
@@ -111,7 +111,7 @@ quietly wrong, which is harder to notice than a crash.
 
 Each node writes its own NDJSON and its own summary; nothing is sent between
 nodes while the job runs. When the workload finishes, the wrapper runs
-`hpc-telemetry --merge` to produce one job-level summary alongside them.
+`logger-rs --merge` to produce one job-level summary alongside them.
 
 ```
 /g/data/ab12/dashboard/sam/
@@ -348,7 +348,7 @@ available it runs in stub mode and collects nothing.
 The wrapper covers the common case. To run the binary directly:
 
 ```bash
-hpc-telemetry \
+logger-rs \
   --output /g/data/ab12/dashboard/$USER/psutil_$PBS_JOBID.log \
   --interval 0.5
 ```
@@ -508,9 +508,9 @@ To publish a new build into that shared location:
 # pair. The library invokes the binary by name from $PATH, so a module that puts
 # one on the path without the other fails at job start with a confusing
 # "not found".
-scp target/x86_64-unknown-linux-musl/release/hpc-telemetry \
-    hpc-telemetry.sh \
-    gadi.nci.org.au:/g/data/gb02/hpc-telemetry/<version>/bin/
+scp target/x86_64-unknown-linux-musl/release/logger-rs \
+    logger-rs.sh \
+    gadi.nci.org.au:/g/data/gb02/logger-rs/<version>/bin/
 ```
 
 Then point the modulefile at the new version. Users pick the change up on their

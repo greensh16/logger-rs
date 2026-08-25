@@ -3,11 +3,11 @@ use clap::Parser;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use hpc_telemetry::cli::Args;
-use hpc_telemetry::logger::TelemetryLogger;
-use hpc_telemetry::manifest;
-use hpc_telemetry::merge;
-use hpc_telemetry::output::write_merged_summary;
+use logger_rs::cli::Args;
+use logger_rs::logger::TelemetryLogger;
+use logger_rs::manifest;
+use logger_rs::merge;
+use logger_rs::output::write_merged_summary;
 
 fn main() -> Result<()> {
     let mut args = Args::parse();
@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     // First, because it is the one mode that must work on a half-configured
     // system — that is what it is for.
     if args.is_check_mode() {
-        std::process::exit(hpc_telemetry::check::run(&args));
+        std::process::exit(logger_rs::check::run(&args));
     }
 
     if args.is_manifest_mode() {

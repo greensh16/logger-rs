@@ -706,7 +706,7 @@ impl TelemetryLogger {
         let Some(path) = &self.args.exit_status_file else {
             return (
                 None,
-                "unknown: no --exit-status-file supplied (use hpc-telemetry.sh)".to_string(),
+                "unknown: no --exit-status-file supplied (use logger-rs.sh)".to_string(),
             );
         };
 
