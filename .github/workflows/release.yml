@@ -1,6 +1,6 @@
 # Build and publish an HPC-ready release when a tag is pushed.
 #
-#   git tag -a v0.2.1 -m "..." && git push origin v0.2.1
+#   git tag -a v0.3.0 -m "..." && git push origin v0.3.0
 #
 # Produces one tarball that unpacks straight into the module tree documented in
 # examples/modulefile, plus a SHA256 to check the transfer to Gadi.

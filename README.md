@@ -81,8 +81,9 @@ better than not running.
 | [Architecture](https://github.com/greensh16/logger-rs/wiki/Architecture) | Module map and the implementation decisions worth knowing |
 | [Building and Deployment](https://github.com/greensh16/logger-rs/wiki/Building-and-Deployment) | Building, cross-compiling, releases, publishing the module |
 
-Wiki source lives in [`wiki/`](wiki/) so documentation changes are reviewed
-alongside the code that motivated them.
+The wiki is a separate repository, cloned alongside this one as
+`logger-rs.wiki/` so documentation changes can be made in the same sitting
+as the code that motivated them.
 
 ## Building
 

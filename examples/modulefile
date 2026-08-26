@@ -11,7 +11,7 @@
 # (/g/data/gb02/modules) holds *modulefiles*; the binary and the shell library
 # live somewhere else entirely, and it is this file that puts them on PATH.
 
-set version   0.2.1
+set version   0.3.0
 set prefix    /g/data/gb02/logger-rs/$version
 
 module-whatis "Per-job resource telemetry for the HPC dashboard"
