@@ -124,3 +124,11 @@ Century Weather, UNSW Sydney.
 If you use this in published work, please cite it — see
 [`CITATION.cff`](CITATION.cff), or the *Cite this repository* button in the
 sidebar.
+
+## Support
+
+If this has saved you some service units, or an afternoon of wondering why a
+job was slow, you can [buy me a coffee](https://buymeacoffee.com/sgreenau).
+
+Entirely optional — it changes nothing about the tool, which is free and
+Apache-2.0 licensed regardless.
