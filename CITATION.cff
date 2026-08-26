@@ -12,6 +12,7 @@ authors:
     family-names: Green
     affiliation: "ARC Centre of Excellence for 21st Century Weather, UNSW Sydney"
 repository-code: "https://github.com/greensh16/logger-rs"
+doi: 10.5281/zenodo.22105314
 license: Apache-2.0
 version: 0.3.0
 keywords:
