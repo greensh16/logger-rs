@@ -123,6 +123,10 @@ jobs:
           cp logger-rs.sh                       "$STAGE/bin/"
           cp examples/gadi-job.pbs examples/modulefile "$STAGE/examples/"
           cp README.md "$STAGE/"
+          # Apache-2.0 section 4(a): every recipient must be given a copy of
+          # the licence. The repository is not the artefact — the tarball is,
+          # and for most users it is the only thing they ever see.
+          cp LICENSE NOTICE "$STAGE/"
           # Permissions are set explicitly rather than inherited, because this
           # unpacks into a *shared* project directory that colleagues load the
           # module from. A file that arrives mode 600 — which is what a

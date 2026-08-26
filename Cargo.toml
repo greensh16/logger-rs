@@ -4,6 +4,8 @@ version = "0.2.1"
 edition = "2021"
 authors = ["HPC Dashboard Team"]
 description = "High-performance telemetry logger for HPC jobs (cgroup v1 and v2)"
+license = "Apache-2.0"
+repository = "https://github.com/greensh16/logger-rs"
 
 # Declared, not just documented. Cargo refuses to build on anything older with
 # a clear message, and clippy reads this to avoid suggesting APIs newer than it

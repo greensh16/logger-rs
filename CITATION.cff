@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "logger-rs: resource telemetry for HPC jobs"
+abstract: >-
+  Samples an HPC job's resource usage from its cgroup and writes NDJSON to
+  shared storage, including per-core CPU utilisation, memory, block I/O and
+  GPU metrics, with a per-node and job-level summary. Supports cgroup v1 and
+  v2, PBS and Slurm.
+type: software
+authors:
+  - given-names: Sam
+    family-names: Green
+    affiliation: "ARC Centre of Excellence for 21st Century Weather, UNSW Sydney"
+repository-code: "https://github.com/greensh16/logger-rs"
+license: Apache-2.0
+version: 0.2.1
+keywords:
+  - high-performance computing
+  - telemetry
+  - cgroups
+  - PBS
+  - Slurm
+  - research software

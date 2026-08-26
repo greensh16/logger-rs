@@ -105,3 +105,14 @@ available it runs in stub mode and collects nothing.
 
 **Requires** Rust 1.87+. Only the build machine's toolchain matters —
 deployment is a static musl binary with no Rust runtime dependency.
+
+## Licence
+
+Apache License 2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
+Copyright 2026 Sam Green. Developed at the ARC Centre of Excellence for 21st
+Century Weather, UNSW Sydney.
+
+If you use this in published work, please cite it — see
+[`CITATION.cff`](CITATION.cff), or the *Cite this repository* button in the
+sidebar.
