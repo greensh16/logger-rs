@@ -1,6 +1,6 @@
 # Build and publish an HPC-ready release when a tag is pushed.
 #
-#   git tag -a v0.3.0 -m "..." && git push origin v0.3.0
+#   git tag -a v0.3.1 -m "..." && git push origin v0.3.1
 #
 # Produces one tarball that unpacks straight into the module tree documented in
 # examples/modulefile, plus a SHA256 to check the transfer to Gadi.
@@ -122,7 +122,7 @@ jobs:
           cp "target/$TARGET/release/logger-rs" "$STAGE/bin/"
           cp logger-rs.sh                       "$STAGE/bin/"
           cp examples/gadi-job.pbs examples/modulefile "$STAGE/examples/"
-          cp README.md "$STAGE/"
+          cp README.md CHANGELOG.md "$STAGE/"
           # Apache-2.0 section 4(a): every recipient must be given a copy of
           # the licence. The repository is not the artefact — the tarball is,
           # and for most users it is the only thing they ever see.

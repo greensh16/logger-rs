@@ -31,6 +31,20 @@ pub struct Args {
     #[arg(long, default_value = "5.0", env = "GPU_INTERVAL")]
     pub gpu_interval: f64,
 
+    /// How often to checkpoint the summary file, in seconds. 0 disables it.
+    ///
+    /// The summary is normally written when the logger shuts down. That is lost
+    /// if the logger is SIGKILLed, which is what happens to every process in a
+    /// job that exhausts its walltime — leaving `--merge` with nothing to
+    /// combine. Checkpointing bounds the loss to one period; the checkpoint is
+    /// marked `"partial": true` so nothing mistakes it for a completed run.
+    ///
+    /// Each checkpoint is one small write-and-rename per node, so the default
+    /// is cheap even for a job spanning hundreds of nodes. Raise it if a site's
+    /// metadata server is under pressure.
+    #[arg(long, default_value = "30.0", env = "SUMMARY_EVERY")]
+    pub summary_every: f64,
+
     /// Output NDJSON log file path. `--output` is accepted as an alias.
     ///
     /// Supports `{host}`, `{jobid}` and `{user}` placeholders, expanded on the
@@ -151,7 +165,51 @@ impl Args {
     /// Call once after parsing.
     pub fn resolve_and_validate(&mut self) -> Result<()> {
         self.resolve_pbs_defaults();
+        self.resolve_slurm_defaults();
         self.validate()
+    }
+
+    /// Fill anything PBS did not supply from Slurm's environment.
+    ///
+    /// Runs *after* the PBS pass and only writes where the value is still
+    /// empty or `"unknown"`, so a site that exports both — or a user who
+    /// passed an explicit flag — keeps what it already had. On a pure Slurm
+    /// system the PBS pass simply finds nothing and every field falls through
+    /// to here.
+    fn resolve_slurm_defaults(&mut self) {
+        // Captures nothing, so it is `Copy` and can be passed by value to each
+        // of the three helpers below without being moved out of.
+        let env = |key: &str| std::env::var(key).ok();
+        let id = crate::scheduler::slurm_identity_from(env);
+
+        if self.job_id.as_deref().unwrap_or("").trim().is_empty() {
+            self.job_id = id.job_id;
+        }
+        if self.queue == "unknown" || self.queue.is_empty() {
+            if let Some(v) = id.queue {
+                self.queue = v;
+            }
+        }
+        if self.job_name == "unknown" || self.job_name.is_empty() {
+            if let Some(v) = id.job_name {
+                self.job_name = v;
+            }
+        }
+        if self.project == "unknown" || self.project.is_empty() {
+            if let Some(v) = id.project {
+                self.project = v;
+            }
+        }
+        if self.booked_walltime.is_empty() {
+            if let Some(v) = crate::scheduler::slurm_walltime_from(env) {
+                self.booked_walltime = v;
+            }
+        }
+        if self.booked_mem.is_empty() {
+            if let Some(v) = crate::scheduler::slurm_booked_mem_from(env) {
+                self.booked_mem = v;
+            }
+        }
     }
 
     fn resolve_pbs_defaults(&mut self) {
@@ -514,6 +572,7 @@ mod tests {
             tree_pid: 1,
             interval: 0.5,
             gpu_interval: 5.0,
+            summary_every: 30.0,
             outfile: Some(PathBuf::from("/tmp/out.log")),
             check: false,
             merge: None,

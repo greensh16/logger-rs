@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/greensh16/logger-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/greensh16/logger-rs/actions/workflows/ci.yml)
 [![Release](https://github.com/greensh16/logger-rs/actions/workflows/release.yml/badge.svg)](https://github.com/greensh16/logger-rs/actions/workflows/release.yml)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22105314.svg)](https://doi.org/10.5281/zenodo.22105314)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22105313.svg)](https://doi.org/10.5281/zenodo.22105313)
 [![Licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/greensh16/logger-rs?sort=semver)](https://github.com/greensh16/logger-rs/releases/latest)
 [![Rust 1.87+](https://img.shields.io/badge/rust-1.87%2B-orange.svg)](https://www.rust-lang.org)
@@ -113,6 +113,11 @@ available it runs in stub mode and collects nothing.
 
 **Requires** Rust 1.87+. Only the build machine's toolchain matters —
 deployment is a static musl binary with no Rust runtime dependency.
+
+## Changes
+
+What changed in each release, and what is not supported yet, is in
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## Licence
 

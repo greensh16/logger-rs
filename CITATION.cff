@@ -12,9 +12,12 @@ authors:
     family-names: Green
     affiliation: "ARC Centre of Excellence for 21st Century Weather, UNSW Sydney"
 repository-code: "https://github.com/greensh16/logger-rs"
-doi: 10.5281/zenodo.22105314
+# Concept DOI: resolves to the most recent release, so it does not need
+# updating each time. The version-specific DOI cannot live here anyway — Zenodo
+# only mints it after the tag is pushed, which is after this file is committed.
+doi: 10.5281/zenodo.22105313
 license: Apache-2.0
-version: 0.3.0
+version: 0.3.1
 keywords:
   - high-performance computing
   - telemetry

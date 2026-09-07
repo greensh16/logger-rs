@@ -49,6 +49,33 @@ pub fn find_node_summaries(dir: &Path, job_id: &str) -> Result<Vec<PathBuf>> {
     Ok(found)
 }
 
+/// Find the NDJSON stream files for `job_id` in `dir`.
+///
+/// Used only for diagnostics. When a merge finds no summaries, the useful
+/// question is whether the loggers ran at all, and the streams answer it: they
+/// are flushed every couple of seconds throughout the run, so their presence
+/// means measurement happened and only the end-of-run write was lost. That is
+/// the signature of a job killed at its walltime limit, and it points at a
+/// different remedy than "the loggers never started".
+pub fn find_node_logs(dir: &Path, job_id: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.ends_with(".log") && name.contains(job_id) {
+            found.push(path);
+        }
+    }
+    found.sort();
+    found
+}
+
 /// True for the merged output's own filename, `psutil_<jobid>.summary.json`.
 fn is_merged_summary_name(name: &str, job_id: &str) -> bool {
     name == merged_summary_filename(job_id)
@@ -178,6 +205,7 @@ pub fn merge_summaries(
             cpu_efficiency_pct_avg: s.cpu_efficiency_pct_avg,
             mem_peak_bytes: mem_peak,
             exit_status: s.exit_status,
+            partial: s.partial,
         });
     }
 
@@ -191,6 +219,14 @@ pub fn merge_summaries(
         .iter()
         .filter(|n| !reporting.contains(*n))
         .cloned()
+        .collect();
+
+    // Taken from per_node rather than from `summaries` so the list is in the
+    // same sorted order as the per-node array a reader is looking at.
+    let nodes_partial: Vec<String> = per_node
+        .iter()
+        .filter(|n| n.partial)
+        .map(|n| n.hostname.clone())
         .collect();
 
     // A ratio of two sums, so this is exact even though the peaks are not.
@@ -224,6 +260,7 @@ pub fn merge_summaries(
             .num_nodes_allocated
             .or_else(|| u32::try_from(expected_nodes.len()).ok().filter(|n| *n > 0)),
         nodes_missing,
+        nodes_partial,
         total_cpus,
         samples_total,
         cpu_core_seconds,
@@ -425,6 +462,38 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_flags_nodes_that_only_checkpointed() {
+        let mut a = node("a", 0, 4, 1.0, 0.0);
+        let mut b = node("b", 1, 4, 1.0, 0.0);
+        let c = node("c", 2, 4, 1.0, 0.0);
+        a.partial = true;
+        b.partial = true;
+
+        let expected = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let merged = merge_summaries(&[a, b, c], &expected).unwrap();
+
+        // A partial node is not a missing one: it reported, just not to the end.
+        // Conflating them would either hide the shortfall or double-count it.
+        assert_eq!(merged.nodes_partial, vec!["a".to_string(), "b".to_string()]);
+        assert!(merged.nodes_missing.is_empty());
+        assert_eq!(merged.num_nodes_reporting, 3);
+        assert_eq!(merged.per_node.iter().filter(|n| n.partial).count(), 2);
+    }
+
+    #[test]
+    fn test_merge_of_clean_nodes_reports_nothing_partial() {
+        // The control for the test above: without the flag set, no node is
+        // labelled, so a normal job's summary is unchanged by this feature.
+        let nodes = vec![node("a", 0, 4, 1.0, 0.0), node("b", 1, 4, 1.0, 0.0)];
+        let expected = vec!["a".to_string(), "b".to_string()];
+
+        let merged = merge_summaries(&nodes, &expected).unwrap();
+
+        assert!(merged.nodes_partial.is_empty());
+        assert!(merged.per_node.iter().all(|n| !n.partial));
+    }
+
+    #[test]
     fn test_merge_exit_status_any_failure_wins() {
         let mut a = node("a", 0, 4, 1.0, 0.0);
         let mut b = node("b", 1, 4, 1.0, 0.0);
@@ -553,5 +622,32 @@ mod tests {
 
         assert_eq!(summaries.len(), 1, "the good summary must still be usable");
         assert_eq!(failures.len(), 1);
+    }
+
+    #[test]
+    fn test_find_node_logs_distinguishes_killed_from_never_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let job = "12345.gadi-pbs";
+
+        // Nothing at all: the loggers never started.
+        assert!(find_node_logs(dir.path(), job).is_empty());
+
+        // Streams but no summaries: the loggers ran and were killed before
+        // their final write. These two cases need different advice, which is
+        // the whole reason this function exists.
+        std::fs::write(dir.path().join(format!("psutil_{job}_node1.log")), "{}\n").unwrap();
+        std::fs::write(dir.path().join(format!("psutil_{job}_node2.log")), "{}\n").unwrap();
+        // Another job's stream must not be counted.
+        std::fs::write(dir.path().join("psutil_99999.gadi-pbs_node1.log"), "{}\n").unwrap();
+        // Nor the summary files, which do not end in `.log`.
+        std::fs::write(
+            dir.path().join(format!("psutil_{job}_node1.log.summary.json")),
+            "{}",
+        )
+        .unwrap();
+
+        let logs = find_node_logs(dir.path(), job);
+        assert_eq!(logs.len(), 2, "only this job's NDJSON streams: {logs:?}");
+        assert!(logs.iter().all(|p| p.to_str().unwrap().contains(job)));
     }
 }

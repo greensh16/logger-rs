@@ -92,6 +92,38 @@ fn run_write_manifest(args: &Args) -> Result<()> {
 }
 
 /// Combine the per-node summaries of a multi-node job into one job-level file.
+/// Explain a merge that found nothing, distinguishing the two causes.
+///
+/// "No summaries" has two very different meanings and the same message used to
+/// cover both. If the NDJSON streams are there, the loggers ran and were killed
+/// before their final write — the data is on disk and the fix is on the
+/// shutdown path. If nothing is there at all, the loggers never started, and
+/// the fix is in the job script.
+fn no_summaries_message(dir: &std::path::Path, job_id: &str) -> String {
+    let logs = merge::find_node_logs(dir, job_id);
+
+    if logs.is_empty() {
+        return format!(
+            "no per-node summaries or telemetry logs for job {job_id} found in {dir:?}. \
+             The loggers do not appear to have run at all. Check the job's stderr for \
+             errors from telemetry_start, and that the output directory is writable \
+             from the compute nodes."
+        );
+    }
+
+    format!(
+        "no per-node summaries for job {job_id} found in {dir:?}, but {} telemetry log(s) \
+         are there. The loggers ran and were killed before writing their summaries — the \
+         usual cause is the job hitting its walltime limit, where the scheduler's SIGKILL \
+         arrives before shutdown finishes. The samples themselves are intact in those logs \
+         and the dashboard can still read them; only the job-level roll-up is missing. \
+         Summary checkpointing (--summary-every, 30s by default) exists to leave \
+         something mergeable here, so finding nothing means it was disabled, or the \
+         job ended within the first period, or these logs predate it.",
+        logs.len()
+    )
+}
+
 fn run_merge(args: &Args) -> Result<()> {
     let dir = args
         .merge
@@ -101,13 +133,7 @@ fn run_merge(args: &Args) -> Result<()> {
 
     let paths = merge::find_node_summaries(dir, &job_id)?;
     if paths.is_empty() {
-        anyhow::bail!(
-            "no per-node summaries for job {} found in {:?}. Each node's logger writes \
-             <output>.summary.json when it stops; if none exist, the loggers did not run \
-             or were killed before they could finish.",
-            job_id,
-            dir
-        );
+        anyhow::bail!("{}", no_summaries_message(dir, &job_id));
     }
 
     let (summaries, failures) = merge::load_node_summaries(&paths);
@@ -134,6 +160,15 @@ fn run_merge(args: &Args) -> Result<()> {
              The totals above understate the job.",
             merged.nodes_missing.len(),
             merged.nodes_missing.join(", ")
+        );
+    }
+    if !merged.nodes_partial.is_empty() {
+        eprintln!(
+            "NOTE: {} node(s) reported a mid-run checkpoint rather than a clean finish: {}. \
+             Their figures stop at the last checkpoint, so the totals are a lower bound. \
+             This is what a job killed at its walltime limit looks like.",
+            merged.nodes_partial.len(),
+            merged.nodes_partial.join(", ")
         );
     }
     if !failures.is_empty() {

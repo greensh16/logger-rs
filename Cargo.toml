@@ -1,6 +1,6 @@
 [package]
 name = "logger-rs"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 authors = ["HPC Dashboard Team"]
 description = "High-performance telemetry logger for HPC jobs (cgroup v1 and v2)"

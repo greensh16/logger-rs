@@ -26,6 +26,9 @@
 #                        or the working directory if that is unset)
 #   --interval SECS      Sampling interval (default: 0.5)
 #   --gpu-interval SECS  GPU polling interval (default: 5.0)
+#   --summary-every SECS How often each node checkpoints its summary, so a
+#                        walltime kill still leaves something to merge
+#                        (default: 30, 0 disables)
 #   --telemetry-bin PATH logger-rs binary (default: found on $PATH)
 #   --single-node        Only measure this node, even on a multi-node job
 #   --no-merge           Skip the job-level merge at the end
@@ -78,6 +81,7 @@ _HT_ACTIVE=0
 _HT_BIN=""
 _HT_INTERVAL="0.5"
 _HT_GPU_INTERVAL="5.0"
+_HT_SUMMARY_EVERY="30"
 _HT_OUTPUT=""
 _HT_OUTPUT_DIR=""
 _HT_SINGLE_NODE=0
@@ -148,6 +152,7 @@ _ht_start_logger_here() {
         --outfile "$_HT_OUTPUT" \
         --interval "$_HT_INTERVAL" \
         --gpu-interval "$_HT_GPU_INTERVAL" \
+        --summary-every "$_HT_SUMMARY_EVERY" \
         --tree-pid "$$" \
         --job-id "$_HT_JOB_ID" \
         ${_HT_BOOKED_WALLTIME:+--booked-walltime "$_HT_BOOKED_WALLTIME"} \
@@ -178,6 +183,7 @@ _ht_start_logger_remote() {
             --outfile "$_HT_OUTPUT" \
             --interval "$_HT_INTERVAL" \
             --gpu-interval "$_HT_GPU_INTERVAL" \
+            --summary-every "$_HT_SUMMARY_EVERY" \
             --procs-from cgroup \
             --job-id "$_HT_JOB_ID" \
             ${_HT_BOOKED_WALLTIME:+--booked-walltime "$_HT_BOOKED_WALLTIME"} \
@@ -191,6 +197,7 @@ _ht_start_logger_remote() {
             --outfile "$_HT_OUTPUT" \
             --interval "$_HT_INTERVAL" \
             --gpu-interval "$_HT_GPU_INTERVAL" \
+            --summary-every "$_HT_SUMMARY_EVERY" \
             --procs-from cgroup \
             --job-id "$_HT_JOB_ID" \
             ${_HT_BOOKED_WALLTIME:+--booked-walltime "$_HT_BOOKED_WALLTIME"} \
@@ -204,6 +211,7 @@ _ht_start_logger_remote() {
             --outfile "$_HT_OUTPUT" \
             --interval "$_HT_INTERVAL" \
             --gpu-interval "$_HT_GPU_INTERVAL" \
+            --summary-every "$_HT_SUMMARY_EVERY" \
             --procs-from cgroup \
             --job-id "$_HT_JOB_ID" \
             ${_HT_BOOKED_WALLTIME:+--booked-walltime "$_HT_BOOKED_WALLTIME"} \
@@ -228,6 +236,7 @@ telemetry_start() {
     _HT_BIN="${TELEMETRY_BIN:-logger-rs}"
     _HT_INTERVAL="0.5"
     _HT_GPU_INTERVAL="5.0"
+    _HT_SUMMARY_EVERY="30"
     _HT_OUTPUT=""
     _HT_SINGLE_NODE=0
     _HT_DO_MERGE=1
@@ -243,6 +252,7 @@ telemetry_start() {
             --output)        _HT_OUTPUT="${2:-}"; shift 2 ;;
             --interval)      _HT_INTERVAL="${2:-}"; shift 2 ;;
             --gpu-interval)  _HT_GPU_INTERVAL="${2:-}"; shift 2 ;;
+            --summary-every) _HT_SUMMARY_EVERY="${2:-}"; shift 2 ;;
             --telemetry-bin) _HT_BIN="${2:-}"; shift 2 ;;
             --single-node)   _HT_SINGLE_NODE=1; shift ;;
             --no-merge)      _HT_DO_MERGE=0; shift ;;
@@ -504,11 +514,27 @@ telemetry_stop() {
     fi
 
     # Wait for the remote loggers to notice the exit-status file and write their
-    # summaries. They poll every couple of seconds, so this is generous.
+    # summaries. They poll every couple of seconds, so 30s is generous.
+    #
+    # Unless we are ourselves being killed. A status of 143 or 137 means the
+    # scheduler sent us SIGTERM and is now counting down to SIGKILL — on PBS Pro
+    # that grace period is `kill_delay`, ten seconds by default. Waiting the full
+    # 30s in that situation does not get us more summaries: it guarantees we are
+    # killed before reaching the merge below, which is exactly how a walltime
+    # kill ends up producing no job-level summary at all. Better to take
+    # whatever the remotes have managed and spend the remaining seconds merging.
+    #
+    # The remotes are in the same race on their own nodes, which is why they
+    # also checkpoint their summaries as they go (see --summary-every); this
+    # wait is about catching a clean finish, not about rescuing a doomed one.
+    local _wait_secs=30
+    case "$status" in
+        137|143) _wait_secs=4 ;;
+    esac
     if [[ "${#_HT_LAUNCHER_PIDS[@]}" -gt 0 ]]; then
-        _ht_warn "waiting for $((_HT_NUM_NODES - 1)) remote logger(s)..."
+        _ht_warn "waiting up to ${_wait_secs}s for $((_HT_NUM_NODES - 1)) remote logger(s)..."
         local _try _pid _still
-        for _try in $(seq 1 30); do
+        for _try in $(seq 1 "$_wait_secs"); do
             _still=0
             for _pid in "${_HT_LAUNCHER_PIDS[@]}"; do
                 kill -0 "$_pid" 2>/dev/null && _still=1
@@ -533,7 +559,9 @@ telemetry_stop() {
         # secondary to the workload's own result.
         if ! "$_HT_BIN" --merge "$_HT_OUTPUT_DIR" --job-id "$_HT_JOB_ID" \
                 ${_expect:+--merge-expect-nodes "$_expect"}; then
-            _ht_warn "merge failed; the per-node summaries are still on disk"
+            _ht_warn "merge failed (see above); the per-node logs are still on disk."
+            _ht_warn "you can retry it later from a login node:"
+            _ht_warn "  logger-rs --merge $_HT_OUTPUT_DIR --job-id $_HT_JOB_ID"
         fi
     fi
 

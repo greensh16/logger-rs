@@ -51,6 +51,10 @@ pub struct TelemetryLogger {
     /// Guards against `Drop` writing the summary a second time.
     summary_written: bool,
     flush_every: usize,
+    /// Ticks between checkpoint summary writes; 0 disables them.
+    summary_every: usize,
+    /// So a persistently failing checkpoint warns once rather than every period.
+    checkpoint_warned: bool,
 
     /// `None` when no cgroup could be found. Fatal on Linux; on other platforms
     /// the logger runs in stub mode so the binary is still developable.
@@ -245,6 +249,12 @@ impl TelemetryLogger {
         let prev_net = read_network_stats().ok();
 
         let flush_every = ((MAX_FLUSH_LAG / args.interval).round() as usize).max(1);
+        // 0 disables checkpointing; anything else becomes at least one tick.
+        let summary_every = if args.summary_every <= 0.0 {
+            0
+        } else {
+            ((args.summary_every / args.interval).round() as usize).max(1)
+        };
         let gpu = GpuSampler::new(args.gpu_interval);
 
         Ok(Self {
@@ -257,6 +267,8 @@ impl TelemetryLogger {
             start_time: Instant::now(),
             summary_written: false,
             flush_every,
+            summary_every,
+            checkpoint_warned: false,
             cgroup,
             allowed_cpus,
             hostname,
@@ -360,6 +372,25 @@ impl TelemetryLogger {
 
                     if self.samples.is_multiple_of(self.flush_every) {
                         let _ = self.output_file.flush();
+                    }
+
+                    // Checkpoint the summary so a SIGKILL — which is how a
+                    // walltime kill ends — leaves something to merge. The write
+                    // goes through the same temp-file-and-rename as the final
+                    // one, so a reader never sees a half-written document and
+                    // the previous checkpoint stays intact until this one is
+                    // complete.
+                    if self.summary_every > 0 && self.samples.is_multiple_of(self.summary_every) {
+                        if let Err(e) = self.write_checkpoint_summary() {
+                            if !self.checkpoint_warned {
+                                self.checkpoint_warned = true;
+                                eprintln!(
+                                    "WARNING: could not checkpoint the summary to {:?}: {e}. \
+                                     Sampling continues; further checkpoint failures are silent.",
+                                    self.summary_path
+                                );
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -728,11 +759,14 @@ impl TelemetryLogger {
         }
     }
 
-    fn write_final_summary(&mut self) -> Result<()> {
-        if self.summary_written {
-            return Ok(());
-        }
-
+    /// Bring the derived fields of `self.summary` up to date with the run so far.
+    ///
+    /// Split out of `write_final_summary` so a mid-run checkpoint produces the
+    /// same shape of document as a clean exit. Everything here is a pure
+    /// function of the accumulators and the elapsed time, so calling it
+    /// repeatedly is harmless: each call overwrites the previous derivation
+    /// rather than adding to it.
+    fn recompute_derived_fields(&mut self) {
         let duration = self.start_time.elapsed().as_secs_f64();
 
         self.summary.samples = self.samples;
@@ -773,12 +807,49 @@ impl TelemetryLogger {
         if booked_mem_bytes > 0 {
             self.summary.mem_efficiency_pct = (peak_mem as f64 / booked_mem_bytes as f64) * 100.0;
         }
+    }
+
+    /// Write a mid-run checkpoint of the summary.
+    ///
+    /// This exists because of how jobs actually end. A job that exhausts its
+    /// walltime gets SIGTERM and then, a few seconds later, SIGKILL — and
+    /// SIGKILL cannot be caught, so neither the shutdown path nor `Drop` runs.
+    /// With the summary written only at exit, every node in that job left no
+    /// summary at all and `--merge` had nothing to combine, even though the
+    /// NDJSON stream beside it held the whole run. A checkpoint bounds that
+    /// loss to one interval instead of the entire job.
+    ///
+    /// Deliberately *not* setting `summary_written`: this is a placeholder for
+    /// a final write that we still expect to happen.
+    ///
+    /// Exit status is left alone. `read_exit_status` would find no file yet and
+    /// record a parse failure into `exit_reason`, which would then no longer
+    /// equal "unknown" and would stop the final write from filling it in.
+    fn write_checkpoint_summary(&mut self) -> Result<()> {
+        if self.summary_written {
+            return Ok(());
+        }
+        self.recompute_derived_fields();
+        self.summary.partial = true;
+        write_summary_file(&self.summary_path, &self.summary)
+    }
+
+    fn write_final_summary(&mut self) -> Result<()> {
+        if self.summary_written {
+            return Ok(());
+        }
+
+        self.recompute_derived_fields();
 
         if self.summary.exit_reason == "unknown" {
             let (status, reason) = self.read_exit_status();
             self.summary.exit_status = status;
             self.summary.exit_reason = reason;
         }
+
+        // Clears the flag a checkpoint may have set, so the file on disk always
+        // says whether it describes a complete run.
+        self.summary.partial = false;
 
         write_summary_file(&self.summary_path, &self.summary)?;
         self.summary_written = true;

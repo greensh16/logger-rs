@@ -338,6 +338,22 @@ pub struct TelemetrySummary {
     #[serde(default)]
     pub exit_reason: String,
 
+    /// True while this file is a periodic checkpoint rather than the summary
+    /// written when the logger shut down cleanly.
+    ///
+    /// The distinction matters because a checkpoint's `duration_sec`,
+    /// `cpu_core_seconds` and every peak below cover only the run *so far*. If
+    /// the logger is SIGKILLed — the usual end of a job that exhausts its
+    /// walltime — the last checkpoint is what survives, and reading it as a
+    /// completed run would silently report a short job with low totals.
+    ///
+    /// Set false again by the final write, so the file on disk always describes
+    /// itself. Absent in summaries written before this field existed, which
+    /// `serde(default)` correctly reads as "not a checkpoint": those files only
+    /// ever appeared on the clean-exit path.
+    #[serde(default)]
+    pub partial: bool,
+
     // Notes
     pub notes: SummaryNotes,
 }
@@ -484,6 +500,7 @@ impl TelemetrySummary {
             mem_efficiency_pct: 0.0,
             exit_status: None,
             exit_reason: "unknown".to_string(),
+            partial: false,
             notes: SummaryNotes::default(),
         }
     }
@@ -553,6 +570,10 @@ pub struct NodeSummary {
     /// Peak memory, from the cgroup where available.
     pub mem_peak_bytes: u64,
     pub exit_status: Option<i32>,
+    /// True when this node's summary was a checkpoint rather than a clean exit,
+    /// so its figures cover only the run up to the last checkpoint.
+    #[serde(default)]
+    pub partial: bool,
 }
 
 /// A whole job, combined from the per-node summaries by `logger-rs --merge`.
@@ -589,6 +610,13 @@ pub struct MergedSummary {
     /// node that never started one. Their usage is missing from the totals
     /// below, so a non-empty list means the job figures understate reality.
     pub nodes_missing: Vec<String>,
+    /// Nodes whose summary was a mid-run checkpoint, not a clean exit — the
+    /// normal outcome for a job killed at its walltime limit. Their figures stop
+    /// at the last checkpoint, so the totals below are a lower bound rather than
+    /// merely incomplete. Distinct from `nodes_missing`: these nodes did report,
+    /// just not to the end.
+    #[serde(default)]
+    pub nodes_partial: Vec<String>,
 
     /// Total CPUs across all reporting nodes.
     pub total_cpus: usize,
@@ -635,6 +663,8 @@ pub struct MergedNotes {
     pub totals: String,
     pub peaks: String,
     pub missing_nodes: String,
+    #[serde(default)]
+    pub partial_nodes: String,
 }
 
 impl Default for MergedNotes {
@@ -650,6 +680,12 @@ impl Default for MergedNotes {
             missing_nodes:
                 "nodes_missing lists allocated nodes that produced no summary. If it is non-empty, \
                  every total here understates the job."
+                    .to_string(),
+            partial_nodes:
+                "nodes_partial lists nodes whose summary was a mid-run checkpoint rather than a \
+                 clean exit, which is what a walltime kill leaves behind. Their contribution stops \
+                 at the last checkpoint, so duration and totals are lower bounds. The NDJSON \
+                 stream beside each summary runs closer to the true end."
                     .to_string(),
         }
     }
