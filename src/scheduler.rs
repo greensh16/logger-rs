@@ -309,12 +309,12 @@ mod tests {
 
     #[test]
     fn test_slurm_time_all_six_formats() {
-        assert_eq!(parse_slurm_time("30"), Some(1_800));            // minutes
-        assert_eq!(parse_slurm_time("60:30"), Some(3_630));         // mm:ss
-        assert_eq!(parse_slurm_time("01:00:30"), Some(3_630));      // hh:mm:ss
-        assert_eq!(parse_slurm_time("2-12"), Some(216_000));        // dd-hh
-        assert_eq!(parse_slurm_time("2-12:30"), Some(217_800));     // dd-hh:mm
-        assert_eq!(parse_slurm_time("2-12:30:15"), Some(217_815));  // dd-hh:mm:ss
+        assert_eq!(parse_slurm_time("30"), Some(1_800)); // minutes
+        assert_eq!(parse_slurm_time("60:30"), Some(3_630)); // mm:ss
+        assert_eq!(parse_slurm_time("01:00:30"), Some(3_630)); // hh:mm:ss
+        assert_eq!(parse_slurm_time("2-12"), Some(216_000)); // dd-hh
+        assert_eq!(parse_slurm_time("2-12:30"), Some(217_800)); // dd-hh:mm
+        assert_eq!(parse_slurm_time("2-12:30:15"), Some(217_815)); // dd-hh:mm:ss
     }
 
     #[test]
@@ -327,7 +327,17 @@ mod tests {
 
     #[test]
     fn test_slurm_time_rejects_rather_than_guesses() {
-        for bad in ["", "   ", "UNLIMITED", "unlimited", "abc", "1:2:3:4", "-", "2-", "1:x"] {
+        for bad in [
+            "",
+            "   ",
+            "UNLIMITED",
+            "unlimited",
+            "abc",
+            "1:2:3:4",
+            "-",
+            "2-",
+            "1:x",
+        ] {
             assert_eq!(parse_slurm_time(bad), None, "expected None for {bad:?}");
         }
     }

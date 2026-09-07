@@ -641,7 +641,8 @@ mod tests {
         std::fs::write(dir.path().join("psutil_99999.gadi-pbs_node1.log"), "{}\n").unwrap();
         // Nor the summary files, which do not end in `.log`.
         std::fs::write(
-            dir.path().join(format!("psutil_{job}_node1.log.summary.json")),
+            dir.path()
+                .join(format!("psutil_{job}_node1.log.summary.json")),
             "{}",
         )
         .unwrap();
