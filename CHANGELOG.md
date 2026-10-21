@@ -56,6 +56,9 @@ This release fixes that, and lays the groundwork for Slurm.
   `ROCR_VISIBLE_DEVICES`, plus a Setonix GPU telemetry acceptance job.
 - GPU queries now run in a background worker so a slow `amd-smi` call does not
   stretch the CPU and memory sampling tick.
+- AMD GPU power falls back to `rocm-smi --showpower --csv` when AMD SMI reports
+  zero or unavailable power. The Setonix acceptance job retains both tools'
+  raw power output for diagnosis.
 
 ### Changed
 
@@ -87,8 +90,9 @@ This release fixes that, and lays the groundwork for Slurm.
   51293735 ran an older binary and collected no GPU readings; the updated
   sampler then passed the AMD GPU metrics and scope checks in job 51293839.
   That job wrote only eight samples in 15 seconds, so the subsequent background
-  polling change awaits an on-cluster cadence check. Other Slurm sites remain
-  unvalidated.
+  polling change was tested in job 51294237: 31 samples in 15 seconds. That
+  job's GPU power was zero throughout, so the ROCm SMI fallback and the revised
+  checker await a live validation run. Other Slurm sites remain unvalidated.
 
 ### Known limitations
 

@@ -357,7 +357,69 @@ fn run_amd_smi() -> Option<GpuStats> {
         return None;
     }
 
-    Some(parse_amd_smi_csv(&String::from_utf8_lossy(&output.stdout)))
+    let mut stats = parse_amd_smi_csv(&String::from_utf8_lossy(&output.stdout));
+    if stats.power.iter().any(|power| *power <= 0.0) {
+        if let Some(fallback) = run_rocm_smi_power() {
+            fill_missing_power(&mut stats, &fallback);
+        }
+    }
+    Some(stats)
+}
+
+/// ROCm SMI uses a separate power interface. Some MI250X nodes returned a
+/// zero AMD SMI socket-power value throughout a job even while the other AMD
+/// metrics were valid, so use this read-only fallback only for missing power.
+fn run_rocm_smi_power() -> Option<Vec<(u32, f64)>> {
+    let output = Command::new("rocm-smi")
+        .args(["--showpower", "--csv"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(parse_rocm_smi_power_csv(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn parse_rocm_smi_power_csv(stdout: &str) -> Vec<(u32, f64)> {
+    let mut lines = stdout.lines();
+    let Some(headers) = lines
+        .find(|line| line.trim_start().starts_with("device,"))
+        .map(parse_csv_row)
+    else {
+        return Vec::new();
+    };
+    let Some(device_col) = headers.iter().position(|h| h == "device") else {
+        return Vec::new();
+    };
+    let Some(power_col) = headers
+        .iter()
+        .position(|h| h.contains("Graphics Package Power"))
+    else {
+        return Vec::new();
+    };
+    lines
+        .filter_map(|line| {
+            let values = parse_csv_row(line);
+            let device = values.get(device_col)?.strip_prefix("card")?;
+            let index = device.parse::<u32>().ok()?;
+            let power = parse_f64(values.get(power_col)?)?;
+            (power > 0.0).then_some((index, power))
+        })
+        .collect()
+}
+
+fn fill_missing_power(stats: &mut GpuStats, fallback: &[(u32, f64)]) {
+    for (i, index) in stats.indices.iter().enumerate() {
+        if let Some(value) = stats.power.get_mut(i) {
+            if *value <= 0.0 {
+                if let Some((_, power)) = fallback.iter().find(|(gpu, _)| gpu == index) {
+                    *value = *power;
+                }
+            }
+        }
+    }
 }
 
 /// Parse AMD SMI's named CSV columns. Its full metric output contains quoted
@@ -592,6 +654,22 @@ gpu,gfx_activity,vcn_activity,socket_power,edge,hotspot,total_vram,used_vram\n\
     #[test]
     fn test_parse_amd_smi_rejects_unrecognised_header() {
         assert_eq!(parse_amd_smi_csv("gpu,VRAM\n0,65520\n").gpu_count(), 0);
+    }
+
+    #[test]
+    fn test_rocm_smi_power_fills_only_missing_amd_power() {
+        let mut stats = parse_amd_smi_csv(
+            "gpu,gfx_activity,used_vram,total_vram,edge,socket_power\n\
+0,0,10,65520,35,N/A\n\
+1,0,10,65520,35,216\n",
+        );
+        let fallback = parse_rocm_smi_power_csv(
+            "device,Temperature (Sensor edge) (C),Average Graphics Package Power (W)\n\
+card0,35.0,217.0\n\
+card1,36.0,219.0\n",
+        );
+        fill_missing_power(&mut stats, &fallback);
+        assert_eq!(stats.power, vec![217.0, 216.0]);
     }
 
     #[test]

@@ -61,9 +61,19 @@ Job 51293839 passed the GPU metric and scope checks using the rebuilt binary:
 65,520 MiB total VRAM, 140 W and 37 C were recorded for assigned device 0.
 It wrote eight samples during the 15-second test, indicating that synchronous
 AMD SMI queries may delay the 0.5-second CPU sampling cadence. GPU polling
-now runs in a background worker; the acceptance test checks for at least 20
-samples on its next run. Utilization has not been validated against a known
-GPU load.
+now runs in a background worker. Job 51294237 recorded 31 samples in its
+15-second window, confirming the CPU cadence recovered. Its first GPU reading
+and every subsequent reading had power 0 W, so power collection remains
+unverified on that node. The sampler now tries `rocm-smi --showpower --csv`
+when AMD SMI power is missing. The next acceptance run saves both tools' raw
+power output in its telemetry directory and prints their power columns.
+The checker inspects all readings and can be rerun on existing output:
+
+```bash
+python3 testing/check_gpu_telemetry.py 51294237
+```
+
+GPU utilization has not been validated against a known load.
 
 Setonix's `work` partition exposed job-level CPU and memory accounting under
 known loads. The GPU probe exercised AMD SMI but not the logger. No job-level

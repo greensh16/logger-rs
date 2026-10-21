@@ -52,50 +52,32 @@ telemetry_start --telemetry-bin "$BIN" --gpu-interval 2 \
 sleep 15
 telemetry_stop 0 || true
 
-python3 - "$OUTDIR" "$JOB_ID" <<'PY'
-import glob
-import json
+# Read both power interfaces in this same allocation, after telemetry stops.
+# Their raw output is retained so a node-specific missing reading can be
+# distinguished from a parser problem without booking another GPU job.
+timeout 20 amd-smi metric --csv > "$OUTDIR/amd-smi-metric.csv" \
+    2> "$OUTDIR/amd-smi-metric.stderr"
+amd_status=$?
+timeout 20 rocm-smi --showpower --csv > "$OUTDIR/rocm-smi-power.csv" \
+    2> "$OUTDIR/rocm-smi-power.stderr"
+rocm_status=$?
+python3 - "$OUTDIR" "$amd_status" "$rocm_status" <<'PY'
+import csv
 import os
 import sys
 
-outdir, job_id = sys.argv[1:]
-errors = []
-
-def check(condition, message):
-    print(("PASS" if condition else "FAIL") + ": " + message)
-    if not condition:
-        errors.append(message)
-
-logs = glob.glob(os.path.join(outdir, f"psutil_{job_id}_*.log"))
-check(len(logs) == 1, f"one node log: {len(logs)}")
-for path in logs:
-    with open(path, encoding="utf-8") as f:
-        samples = [json.loads(line) for line in f if line.strip()]
-    check(len(samples) >= 20,
-          f"CPU sampling stayed near its 0.5-second cadence: {len(samples)} samples")
-    gpu_samples = [s for s in samples if s.get("gpu_indices")]
-    check(bool(gpu_samples), "AMD GPU readings appeared in NDJSON")
-    for sample in gpu_samples[:1]:
-        check(sample.get("gpu_indices") == [0], "allocated GPU is device 0 inside the step")
-        check(sample.get("gpu_is_node_scoped") is False, "GPU reading is job-scoped")
-        total = sample.get("gpu_memory_total") or []
-        check(len(total) == 1 and total[0] >= 60 * 1024**3,
-              f"MI250X VRAM is at least 60 GiB: {total}")
-        power = sample.get("gpu_power") or []
-        check(len(power) == 1 and power[0] > 0,
-              f"GPU power reading is positive: {power}")
-        temperature = sample.get("gpu_temperature") or []
-        check(len(temperature) == 1 and temperature[0] > 0,
-              f"GPU temperature reading is positive: {temperature}")
-
-summaries = glob.glob(os.path.join(outdir, f"psutil_{job_id}_*.log.summary.json"))
-check(len(summaries) == 1, f"one node summary: {len(summaries)}")
-for path in summaries:
-    with open(path, encoding="utf-8") as f:
-        summary = json.load(f)
-    check(summary.get("gpu_indices") == [0], "summary retains assigned GPU index")
-    check(summary.get("gpu_is_node_scoped") is False, "summary GPU scope is job")
-
-print(f"Telemetry files: {outdir}")
-sys.exit(1 if errors else 0)
+outdir, amd_status, rocm_status = sys.argv[1:]
+print(f"Power diagnostics: amd-smi exit={amd_status}, rocm-smi exit={rocm_status}")
+for filename, fields in (
+    ("amd-smi-metric.csv", ("gpu", "socket_power")),
+    ("rocm-smi-power.csv", ("device", "Average Graphics Package Power (W)")),
+):
+    with open(os.path.join(outdir, filename), encoding="utf-8") as f:
+        lines = f.readlines()
+    start = next((i for i, line in enumerate(lines)
+                  if line.startswith(fields[0] + ",")), len(lines))
+    rows = list(csv.DictReader(lines[start:]))
+    print(filename, [{field: row.get(field) for field in fields} for row in rows[:4]])
 PY
+
+python3 "$ROOT/testing/check_gpu_telemetry.py" "$JOB_ID"
