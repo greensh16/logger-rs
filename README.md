@@ -56,9 +56,9 @@ for a two-node CPU and memory job: both nodes measured the job's cgroup, the
 merged CPU total matched a known workload, and both kernel memory peaks
 captured a 256 MiB allocation. On that site, job-level cgroup I/O and per-core
 CPU breakdown are unavailable; network counters are node-wide. AMD GPU
-sampling is implemented from `amd-smi` output but awaits an on-cluster
-[telemetry test](testing/test_gpu_telemetry.slurm). Other Slurm sites still need
-validation.
+readings passed an on-cluster [telemetry test](testing/test_gpu_telemetry.slurm).
+Background GPU polling and utilization under a known load still need cluster
+validation. Other Slurm sites still need validation.
 
 A complete, commented job script is in [`examples/gadi-job.pbs`](examples/gadi-job.pbs)
 — copy it and change four lines.

@@ -13,7 +13,7 @@ use crate::cgroup::{Cgroup, CpuUsage};
 use crate::cli::Args;
 use crate::cli::ProcsFrom;
 use crate::cpu::{calculate_percpu_busy_pct, calculate_total_cpu_pct, cpu_efficiency_pct};
-use crate::gpu::GpuSampler;
+use crate::gpu::BackgroundGpuSampler;
 use crate::network::{read_network_stats, NetworkStats};
 use crate::output::{create_ndjson_writer, write_ndjson_line, write_summary_file};
 use crate::process::{
@@ -79,7 +79,7 @@ pub struct TelemetryLogger {
     /// attributed to anything.
     prev_cpu: Option<(CpuUsage, Instant)>,
     prev_net: Option<NetworkStats>,
-    gpu: GpuSampler,
+    gpu: BackgroundGpuSampler,
     scan_opts: ScanOptions,
     proc_source: ProcSource,
 }
@@ -255,7 +255,7 @@ impl TelemetryLogger {
         } else {
             ((args.summary_every / args.interval).round() as usize).max(1)
         };
-        let gpu = GpuSampler::new(args.gpu_interval);
+        let gpu = BackgroundGpuSampler::new(args.gpu_interval);
 
         Ok(Self {
             args,

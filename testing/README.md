@@ -57,9 +57,13 @@ sbatch -A YOUR_ACCOUNT-gpu testing/test_gpu_telemetry.slurm
 Job 51293735 ran the acceptance script with an older binary: its preflight
 said "no nvidia-smi" and it produced no GPU readings. The updated script now
 stops immediately with a rebuild instruction when it detects that binary.
-The AMD sampler has not yet been exercised by a live Setonix job. The test
-verifies that readings are present and assigned to the job; it does not
-validate utilization against a known GPU load.
+Job 51293839 passed the GPU metric and scope checks using the rebuilt binary:
+65,520 MiB total VRAM, 140 W and 37 C were recorded for assigned device 0.
+It wrote eight samples during the 15-second test, indicating that synchronous
+AMD SMI queries may delay the 0.5-second CPU sampling cadence. GPU polling
+now runs in a background worker; the acceptance test checks for at least 20
+samples on its next run. Utilization has not been validated against a known
+GPU load.
 
 Setonix's `work` partition exposed job-level CPU and memory accounting under
 known loads. The GPU probe exercised AMD SMI but not the logger. No job-level

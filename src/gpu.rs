@@ -8,13 +8,14 @@
 //!    GPUs are ours, so the figures stay node-wide and are labelled as such.
 //!    Slurm's `SLURM_JOB_GPUS` is deliberately ignored here: its physical indices
 //!    can differ from the GPU indices seen inside a step's device cgroup.
-//! 2. **Cost.** Each poll forks a process. `nvidia-smi` typically takes 50-200ms
-//!    and can block on a busy GPU, so polling it at the 0.5s sample interval both
-//!    cost real time and stretched the sampling tick. [`GpuSampler`] selects an
-//!    available vendor tool and then polls on its own slower cadence, reusing
-//!    the last reading in between.
+//! 2. **Cost.** Each poll forks a process and AMD SMI can take longer than a
+//!    CPU sampling tick. [`BackgroundGpuSampler`] runs the vendor query on a
+//!    separate thread and makes its latest reading available without delaying
+//!    CPU and memory samples.
 
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// GPU statistics, one entry per GPU in scope.
@@ -185,6 +186,54 @@ pub struct GpuSampler {
     cached: GpuStats,
     visibility: GpuVisibility,
     backend: Option<GpuBackend>,
+}
+
+/// Keep slow vendor queries off the CPU sampling thread. The worker owns the
+/// synchronous sampler; a telemetry tick only clones its most recent result.
+/// Dropping this handle lets the worker stop after its current poll or sleep.
+#[derive(Debug)]
+pub struct BackgroundGpuSampler {
+    latest: Arc<Mutex<GpuStats>>,
+}
+
+impl BackgroundGpuSampler {
+    pub fn new(interval_sec: f64) -> Self {
+        let mut sampler = GpuSampler::new(interval_sec);
+        let initial = sampler.empty();
+        let interval = Duration::from_secs_f64(interval_sec.max(0.1));
+        Self::spawn_with(interval, initial, move || {
+            if sampler.is_disabled() {
+                None
+            } else {
+                Some(sampler.sample())
+            }
+        })
+    }
+
+    fn spawn_with<F>(interval: Duration, initial: GpuStats, mut poll: F) -> Self
+    where
+        F: FnMut() -> Option<GpuStats> + Send + 'static,
+    {
+        let latest = Arc::new(Mutex::new(initial));
+        let worker_latest = Arc::clone(&latest);
+        thread::spawn(move || {
+            while Arc::strong_count(&worker_latest) > 1 {
+                let Some(stats) = poll() else {
+                    break;
+                };
+                *worker_latest.lock().unwrap_or_else(|e| e.into_inner()) = stats;
+                thread::sleep(interval);
+            }
+        });
+        Self { latest }
+    }
+
+    pub fn sample(&self) -> GpuStats {
+        self.latest
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
 }
 
 impl GpuSampler {
@@ -695,5 +744,43 @@ gpu,gfx_activity,vcn_activity,socket_power,edge,hotspot,total_vram,used_vram\n\
         sampler.last_poll = Some(Instant::now());
 
         assert_eq!(sampler.sample().utilization, vec![50.0]);
+    }
+
+    #[test]
+    fn test_background_poll_does_not_hold_up_cpu_samples() {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut first = true;
+        let worker = BackgroundGpuSampler::spawn_with(
+            Duration::from_millis(10),
+            GpuStats::default(),
+            move || {
+                if !first {
+                    return None;
+                }
+                first = false;
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Some(GpuStats {
+                    indices: vec![0],
+                    utilization: vec![42.0],
+                    ..Default::default()
+                })
+            },
+        );
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(
+            worker.latest.try_lock().is_ok(),
+            "poll must not hold the result lock"
+        );
+        assert_eq!(worker.sample().gpu_count(), 0);
+        release_tx.send(()).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while worker.sample().utilization.is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(worker.sample().utilization, vec![42.0]);
     }
 }

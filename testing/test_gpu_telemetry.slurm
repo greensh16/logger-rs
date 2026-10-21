@@ -71,6 +71,8 @@ check(len(logs) == 1, f"one node log: {len(logs)}")
 for path in logs:
     with open(path, encoding="utf-8") as f:
         samples = [json.loads(line) for line in f if line.strip()]
+    check(len(samples) >= 20,
+          f"CPU sampling stayed near its 0.5-second cadence: {len(samples)} samples")
     gpu_samples = [s for s in samples if s.get("gpu_indices")]
     check(bool(gpu_samples), "AMD GPU readings appeared in NDJSON")
     for sample in gpu_samples[:1]:

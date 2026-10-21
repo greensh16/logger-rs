@@ -54,6 +54,8 @@ This release fixes that, and lays the groundwork for Slurm.
   `testing/test_telemetry.slurm`, a two-node measured CPU test.
 - AMD GPU sampling through `amd-smi metric --csv`, filtered by
   `ROCR_VISIBLE_DEVICES`, plus a Setonix GPU telemetry acceptance job.
+- GPU queries now run in a background worker so a slow `amd-smi` call does not
+  stretch the CPU and memory sampling tick.
 
 ### Changed
 
@@ -83,7 +85,9 @@ This release fixes that, and lays the groundwork for Slurm.
   51292900) confirmed that two checkpoints and the merge survived the time
   limit, with one node's final counters marked partial. GPU telemetry test
   51293735 ran an older binary and collected no GPU readings; the updated
-  sampler has not yet been validated on Setonix. Other Slurm sites also remain
+  sampler then passed the AMD GPU metrics and scope checks in job 51293839.
+  That job wrote only eight samples in 15 seconds, so the subsequent background
+  polling change awaits an on-cluster cadence check. Other Slurm sites remain
   unvalidated.
 
 ### Known limitations
@@ -91,8 +95,7 @@ This release fixes that, and lays the groundwork for Slurm.
 - Setonix does not expose job-level cgroup I/O at the observed job root, and
   cgroup v2 does not expose per-core CPU breakdown. Network counters describe
   each whole node rather than only this job.
-- AMD GPU sampling has not yet been validated against a live Setonix telemetry
-  run or a known GPU workload.
+- AMD GPU utilization has not yet been validated against a known GPU workload.
 - A checkpointed node's totals are a lower bound, understated by up to one
   checkpoint period. The NDJSON stream runs closer to the true end of the job;
   reconstructing exact totals from it is not implemented.
