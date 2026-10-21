@@ -162,9 +162,12 @@ echo "  srun: $(command -v srun 2>/dev/null || echo 'not found')"
 echo "  scontrol show hostnames:"
 scontrol show hostnames "${SLURM_JOB_NODELIST:-}" 2>/dev/null | sed 's/^/     /'
 echo
-echo "  -- can srun --overlap start one task per node while we hold the allocation?"
+echo "  -- can a separate one-CPU srun step start on each node?"
+# The first probe saw SLURM_CPUS_PER_TASK=9 and SLURM_TRES_PER_TASK=cpu=8;
+# unsetting both for this independent step avoids srun's conflict error.
+env -u SLURM_CPUS_PER_TASK -u SLURM_TRES_PER_TASK \
 srun --nodes="${SLURM_JOB_NUM_NODES:-1}" --ntasks="${SLURM_JOB_NUM_NODES:-1}" \
-     --ntasks-per-node=1 --overlap \
+     --ntasks-per-node=1 --cpus-per-task=1 --overlap --export=ALL \
      bash -c 'echo "     reached $(hostname) as $(whoami), cgroup: $(awk -F: "\$2==\"\" {print \$3; exit}" /proc/self/cgroup)"' \
      2>&1 | head -10
 

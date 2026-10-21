@@ -193,6 +193,17 @@ fn check_scheduler_env(r: &mut Report) {
 /// without it `booked_walltime_sec` is 0, and "used 5% of your booking" becomes
 /// indistinguishable from "we never found out what you booked".
 fn check_booked_walltime(r: &mut Report) {
+    if std::env::var("PBS_JOBID").is_err() && std::env::var("SLURM_JOB_ID").is_ok() {
+        match crate::scheduler::slurm_walltime_from(|key| std::env::var(key).ok()) {
+            Some(value) => r.ok("booked walltime", format!("Slurm booking = {value}")),
+            None => r.warn(
+                "booked walltime",
+                "Slurm provided neither a usable SLURM_TIMELIMIT nor valid job start/end times; walltime efficiency will be unknown.",
+            ),
+        }
+        return;
+    }
+
     for var in [
         "PBS_RESOURCE_LIST_walltime",
         "PBS_WALLTIME",

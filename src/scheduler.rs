@@ -49,7 +49,10 @@ where
     if let Some(n) = num("SLURM_NTASKS_PER_NODE") {
         meta.tasks_per_node = Some(n);
     }
-    if let Some(n) = num("SLURM_CPUS_PER_TASK") {
+    // The wrapper launches a one-CPU logger step. Preserve the batch job's
+    // value so remote summaries describe the workload allocation, not the
+    // logger step's own SLURM_CPUS_PER_TASK=1.
+    if let Some(n) = num("LOGGER_RS_JOB_CPUS_PER_TASK").or_else(|| num("SLURM_CPUS_PER_TASK")) {
         meta.cpus_per_task = Some(n);
     }
 
@@ -156,14 +159,19 @@ pub fn parse_slurm_time(spec: &str) -> Option<u64> {
 
 /// Booked walltime from Slurm's environment, as `HH:MM:SS`.
 ///
-/// `SLURM_TIMELIMIT` is not exported by every site — where it is missing the
-/// shell library asks `scontrol` instead, the same shape as the `qstat`
-/// fallback PBS needs.
+/// Some sites (including Setonix) omit `SLURM_TIMELIMIT` but export the job's
+/// start and scheduled end as Unix timestamps. Their difference is the booking.
 pub fn slurm_walltime_from<F>(get: F) -> Option<String>
 where
     F: Fn(&str) -> Option<String>,
 {
-    let secs = parse_slurm_time(&get("SLURM_TIMELIMIT")?)?;
+    let secs = get("SLURM_TIMELIMIT")
+        .and_then(|value| parse_slurm_time(&value))
+        .or_else(|| {
+            let start = get("SLURM_JOB_START_TIME")?.trim().parse::<u64>().ok()?;
+            let end = get("SLURM_JOB_END_TIME")?.trim().parse::<u64>().ok()?;
+            (start > 0 && end > start).then_some(end - start)
+        })?;
     Some(format_hms_secs(secs))
 }
 
@@ -275,6 +283,15 @@ mod tests {
     }
 
     #[test]
+    fn test_remote_logger_reports_batch_cpu_booking() {
+        let meta = scheduler_metadata_from(env_from(&[
+            ("LOGGER_RS_JOB_CPUS_PER_TASK", "9"),
+            ("SLURM_CPUS_PER_TASK", "1"),
+        ]));
+        assert_eq!(meta.cpus_per_task, Some(9));
+    }
+
+    #[test]
     fn test_ignores_unparseable_values() {
         let meta = scheduler_metadata_from(env_from(&[
             ("PBS_NUM_NODES", "not-a-number"),
@@ -354,6 +371,15 @@ mod tests {
     #[test]
     fn test_slurm_walltime_absent_when_unset() {
         assert_eq!(slurm_walltime_from(|_: &str| None), None);
+    }
+
+    #[test]
+    fn test_setonix_walltime_from_start_and_end() {
+        let env = env_from(&[
+            ("SLURM_JOB_START_TIME", "1792562401"),
+            ("SLURM_JOB_END_TIME", "1792563001"),
+        ]);
+        assert_eq!(slurm_walltime_from(env), Some("00:10:00".into()));
     }
 
     #[test]

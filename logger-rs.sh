@@ -209,7 +209,14 @@ _ht_start_logger_remote() {
         _HT_LAUNCHER_PIDS+=($!)
         _HT_LAUNCHER_HOSTS+=("$host")
     elif command -v srun >/dev/null 2>&1; then
-        srun --nodes=1 --ntasks=1 --nodelist="$host" --overlap \
+        # Setonix's batch environment can contain contradictory inherited
+        # CPU requests (SLURM_CPUS_PER_TASK=9, SLURM_TRES_PER_TASK=cpu=8).
+        # Give this independent logger step one CPU and leave the workload's
+        # environment untouched.
+        env -u SLURM_CPUS_PER_TASK -u SLURM_TRES_PER_TASK \
+            LOGGER_RS_JOB_CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-}" \
+            srun --nodes=1 --ntasks=1 --cpus-per-task=1 --nodelist="$host" \
+            --overlap --export=ALL \
             "$_HT_BIN" \
             --outfile "$_HT_OUTPUT" \
             --interval "$_HT_INTERVAL" \

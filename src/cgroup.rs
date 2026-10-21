@@ -137,7 +137,7 @@ impl Cgroup {
 
         let mut last_error = None;
         for candidate in &ranked {
-            match Self::from_cgroup_file(&candidate.content, tree_pid, &candidate.source) {
+            match Self::from_cgroup_file(&candidate.content, tree_pid, &candidate.source, job_id) {
                 Ok(cg) => return Ok(cg),
                 Err(e) => last_error = Some(e),
             }
@@ -194,7 +194,7 @@ impl Cgroup {
         })
     }
 
-    fn from_cgroup_file(content: &str, pid: i32, source: &str) -> Result<Self> {
+    fn from_cgroup_file(content: &str, pid: i32, source: &str, job_id: &str) -> Result<Self> {
         // Prefer v2 when the unified hierarchy is actually mounted. On a hybrid
         // host both exist; v1 controllers carry the accounting we want, so only
         // take the v2 path when v1 has no cpuacct.
@@ -208,7 +208,7 @@ impl Cgroup {
         }
 
         if let Some(rel) = v2_rel {
-            if let Ok(cg) = Self::discover_v2(&rel, pid, source) {
+            if let Ok(cg) = Self::discover_v2(&rel, pid, source, job_id) {
                 return Ok(cg);
             }
         }
@@ -271,11 +271,25 @@ impl Cgroup {
         })
     }
 
-    fn discover_v2(rel: &str, pid: i32, source: &str) -> Result<Self> {
+    fn discover_v2(rel: &str, pid: i32, source: &str, job_id: &str) -> Result<Self> {
         let root =
             cgroup_v2_root().ok_or_else(|| anyhow::anyhow!("no cgroup2 filesystem mounted"))?;
+        Self::discover_v2_at_root(&root, rel, pid, source, job_id)
+    }
 
-        let dir = probe_at_exact_path(&root, rel, "cpu.stat")
+    fn discover_v2_at_root(
+        root: &Path,
+        rel: &str,
+        pid: i32,
+        source: &str,
+        job_id: &str,
+    ) -> Result<Self> {
+        // Setonix places the batch shell and each srun step beneath the same
+        // job_<id> cgroup. Selecting the logger's task or step would omit its
+        // siblings. Only walk up when an exact job-id component is present;
+        // the slurmstepd.scope parent includes other jobs on the node.
+        let job_rel = slurm_job_root_rel(rel, job_id).unwrap_or_else(|| rel.to_string());
+        let dir = probe_at_exact_path(root, &job_rel, "cpu.stat")
             .ok_or_else(|| anyhow::anyhow!("cpu.stat not found under the unified hierarchy"))?;
 
         Ok(Self {
@@ -288,7 +302,7 @@ impl Cgroup {
                 .join("cpuset.cpus.effective")
                 .exists()
                 .then(|| dir.clone()),
-            rel_path: rel.to_string(),
+            rel_path: job_rel,
             source: source.to_string(),
         })
     }
@@ -583,6 +597,23 @@ pub fn job_id_key(job_id: &str) -> String {
     }
 }
 
+/// Return the exact Slurm job cgroup containing this process, if named in the
+/// path. Never select the enclosing service cgroup: it contains other jobs.
+fn slurm_job_root_rel(rel: &str, job_id: &str) -> Option<String> {
+    let key = job_id_key(job_id);
+    if key.is_empty() || !key.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut components = Vec::new();
+    for component in rel.split('/').filter(|s| !s.is_empty()) {
+        components.push(component);
+        if component == format!("job_{key}") {
+            return Some(format!("/{}", components.join("/")));
+        }
+    }
+    None
+}
+
 /// Read `cgroup.procs` here and in every child cgroup.
 fn collect_procs(dir: &Path, depth: usize, out: &mut Vec<i32>) {
     // Deep enough for any real scheduler layout, shallow enough that a symlink
@@ -710,8 +741,8 @@ fn cgroup_v2_root() -> Option<PathBuf> {
         .then_some(conventional)
 }
 
-/// A probe in a parent cgroup measures every sibling job, so only the path
-/// named by the process's cgroup membership can be used for accounting.
+/// Probe only the chosen exact path. Slurm's verified job_<id> ancestor is
+/// safe; any higher ancestor can include sibling jobs.
 fn probe_at_exact_path(root: &Path, rel: &str, probe: &str) -> Option<PathBuf> {
     let candidate = root.join(rel.trim_start_matches('/'));
     candidate.join(probe).exists().then_some(candidate)
@@ -1163,6 +1194,51 @@ Total 6912
             "12345",
         );
         assert_eq!(ranked[0].source, "slurm");
+    }
+
+    #[test]
+    fn test_setonix_step_resolves_to_exact_job_cgroup() {
+        let rel = "/system.slice/slurmstepd.scope/job_51290724/step_batch/user/task_0";
+        assert_eq!(
+            slurm_job_root_rel(rel, "51290724"),
+            Some("/system.slice/slurmstepd.scope/job_51290724".into())
+        );
+        assert_eq!(slurm_job_root_rel(rel, "5129072"), None);
+        assert_eq!(slurm_job_root_rel(rel, "other"), None);
+        assert_eq!(
+            slurm_job_root_rel("/system.slice/slurmstepd.scope", "51290724"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_setonix_job_cgroup_counts_sibling_steps_only_in_its_job() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("system.slice/slurmstepd.scope");
+        let job = parent.join("job_51290724");
+        let batch = job.join("step_batch/user/task_0");
+        let work = job.join("step_0/user/task_0");
+        let other = parent.join("job_51290725/step_0/user/task_0");
+        for path in [&batch, &work, &other] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(job.join("cpu.stat"), "usage_usec 100\n").unwrap();
+        std::fs::write(batch.join("cpu.stat"), "usage_usec 10\n").unwrap();
+        std::fs::write(batch.join("cgroup.procs"), "101\n").unwrap();
+        std::fs::write(work.join("cgroup.procs"), "102\n").unwrap();
+        std::fs::write(other.join("cgroup.procs"), "103\n").unwrap();
+
+        let cg = Cgroup::discover_v2_at_root(
+            root.path(),
+            "/system.slice/slurmstepd.scope/job_51290724/step_batch/user/task_0",
+            101,
+            "fixture",
+            "51290724",
+        )
+        .unwrap();
+        assert_eq!(cg.rel_path, "/system.slice/slurmstepd.scope/job_51290724");
+        assert_eq!(cg.read_cpu_usage().unwrap().total_ns, 100_000);
+        assert_eq!(cg.procs().unwrap(), vec![101, 102]);
     }
 
     /// The real /proc/self/cgroup from a Gadi normal-queue job, job 174849168.

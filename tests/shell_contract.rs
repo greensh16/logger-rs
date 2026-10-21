@@ -139,3 +139,45 @@ fn missing_qstat_walltime_does_not_abort_a_pipefail_job() {
     assert_success(&output);
     assert!(String::from_utf8_lossy(&output.stdout).contains("WORKLOAD_REACHED"));
 }
+
+#[test]
+fn slurm_remote_logger_ignores_conflicting_batch_cpu_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    executable(
+        &dir.path().join("srun"),
+        "#!/bin/bash\nprintf '%s|%s|%s|%s\\n' \
+         \"${SLURM_CPUS_PER_TASK-unset}\" \"${SLURM_TRES_PER_TASK-unset}\" \
+         \"${LOGGER_RS_JOB_CPUS_PER_TASK-unset}\" \"$*\" \
+         > \"$TEST_DIR/srun-args\"\n",
+    );
+    let path = format!(
+        "{}:{}",
+        dir.path().display(),
+        std::env::var("PATH").unwrap()
+    );
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(
+            "set -euo pipefail; source \"$LOGGER_SH\"; \
+             _HT_BIN=/bin/true; _HT_OUTPUT=out.log; _HT_JOB_ID=51290724; \
+             _HT_EXIT_STATUS_FILE=exit.status; \
+             _ht_start_logger_remote 1 nid002808 nid002808; \
+             wait \"${_HT_LAUNCHER_PIDS[@]}\"",
+        )
+        .env(
+            "LOGGER_SH",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/logger-rs.sh"),
+        )
+        .env("TEST_DIR", dir.path())
+        .env("PATH", path)
+        .env("SLURM_CPUS_PER_TASK", "9")
+        .env("SLURM_TRES_PER_TASK", "cpu=8")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let invoked = std::fs::read_to_string(dir.path().join("srun-args")).unwrap();
+    assert!(invoked.starts_with("unset|unset|9|"), "{invoked}");
+    assert!(invoked.contains("--cpus-per-task=1"), "{invoked}");
+    assert!(invoked.contains("--export=ALL"), "{invoked}");
+    assert!(invoked.contains("--nodelist=nid002808"), "{invoked}");
+}
