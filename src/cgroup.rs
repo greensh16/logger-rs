@@ -275,7 +275,7 @@ impl Cgroup {
         let root =
             cgroup_v2_root().ok_or_else(|| anyhow::anyhow!("no cgroup2 filesystem mounted"))?;
 
-        let dir = walk_up_to_probe(&root, rel, "cpu.stat")
+        let dir = probe_at_exact_path(&root, rel, "cpu.stat")
             .ok_or_else(|| anyhow::anyhow!("cpu.stat not found under the unified hierarchy"))?;
 
         Ok(Self {
@@ -554,10 +554,9 @@ fn representative_rel_path(content: &str) -> String {
 
 /// Whether a controller's cgroup path belongs to the same job as `job_rel`.
 ///
-/// Equal paths are the normal case. One being an ancestor of the other is
-/// accepted too, since a site may nest a controller a level deeper or shallower.
-/// Anything else — most importantly a controller sitting in a service's cgroup
-/// rather than the job's — is a different cgroup and must not be read.
+/// Equal paths are the normal case. A controller nested below the job is also
+/// safe. An ancestor is not: it can contain sibling jobs, even when its path
+/// shares the job's service prefix.
 ///
 /// The root cgroup is never job-scoped: it is the whole node.
 pub fn controller_is_job_scoped(controller_rel: &str, job_rel: &str) -> bool {
@@ -568,7 +567,7 @@ pub fn controller_is_job_scoped(controller_rel: &str, job_rel: &str) -> bool {
         return false;
     }
 
-    c == j || c.starts_with(&format!("{}/", j)) || j.starts_with(&format!("{}/", c))
+    c == j || c.starts_with(&format!("{}/", j))
 }
 
 /// The distinctive part of a job id, for matching against cgroup paths.
@@ -711,25 +710,11 @@ fn cgroup_v2_root() -> Option<PathBuf> {
         .then_some(conventional)
 }
 
-/// Find the deepest directory at or above `root/rel` that contains `probe`.
-///
-/// Walking upwards matters because a job's cgroup can be nested deeper than the
-/// level at which a given controller is actually populated.
-fn walk_up_to_probe(root: &Path, rel: &str, probe: &str) -> Option<PathBuf> {
-    let mut candidate = root.join(rel.trim_start_matches('/'));
-
-    loop {
-        if candidate.join(probe).exists() {
-            return Some(candidate);
-        }
-        if candidate.as_path() == root {
-            return None;
-        }
-        {
-            let parent = candidate.parent()?;
-            candidate = parent.to_path_buf()
-        }
-    }
+/// A probe in a parent cgroup measures every sibling job, so only the path
+/// named by the process's cgroup membership can be used for accounting.
+fn probe_at_exact_path(root: &Path, rel: &str, probe: &str) -> Option<PathBuf> {
+    let candidate = root.join(rel.trim_start_matches('/'));
+    candidate.join(probe).exists().then_some(candidate)
 }
 
 fn resolve_v1_controller(
@@ -742,7 +727,7 @@ fn resolve_v1_controller(
         if name != controller {
             continue;
         }
-        if let Some(path) = walk_up_to_probe(mount, rel, probe) {
+        if let Some(path) = probe_at_exact_path(mount, rel, probe) {
             return Some(path);
         }
     }
@@ -1075,13 +1060,18 @@ Total 6912
     }
 
     #[test]
-    fn test_walk_up_to_probe_missing() {
-        // A probe that cannot exist anywhere under a real directory should walk
-        // all the way to the root and give up rather than loop forever.
-        let root = Path::new("/tmp");
+    fn test_probe_does_not_fall_back_to_parent_cgroup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cpu.stat"), "usage_usec 10\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("job/step")).unwrap();
         assert_eq!(
-            walk_up_to_probe(root, "/a/b/c", "definitely-not-a-real-cgroup-file"),
+            probe_at_exact_path(dir.path(), "/job/step", "cpu.stat"),
             None
+        );
+        std::fs::write(dir.path().join("job/step/cpu.stat"), "usage_usec 5\n").unwrap();
+        assert_eq!(
+            probe_at_exact_path(dir.path(), "/job/step", "cpu.stat"),
+            Some(dir.path().join("job/step"))
         );
     }
 
@@ -1223,12 +1213,12 @@ Total 6912
             "pbspro.service/jobid/12345.gadi-pbs",
             job
         ));
-        // A level deeper or shallower is still the same job.
+        // A controller nested under the job is safe.
         assert!(controller_is_job_scoped(
             "/pbspro.service/jobid/12345.gadi-pbs/task_0",
             job
         ));
-        assert!(controller_is_job_scoped(
+        assert!(!controller_is_job_scoped(
             "/pbspro.service",
             "/pbspro.service/jobid/12345"
         ));

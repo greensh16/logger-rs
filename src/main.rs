@@ -136,7 +136,7 @@ fn run_merge(args: &Args) -> Result<()> {
         anyhow::bail!("{}", no_summaries_message(dir, &job_id));
     }
 
-    let (summaries, failures) = merge::load_node_summaries(&paths);
+    let (summaries, failures) = merge::load_node_summaries(&paths, &job_id);
     if summaries.is_empty() {
         anyhow::bail!(
             "found {} summary file(s) for job {} but none could be parsed",

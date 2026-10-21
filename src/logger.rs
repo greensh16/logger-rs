@@ -474,15 +474,7 @@ impl TelemetryLogger {
         self.prev_cpu = Some((cpu_now, read_at));
 
         // Network deltas, also across contiguous windows.
-        let net_now = read_network_stats().unwrap_or_default();
-        let net_prev = self.prev_net.take().unwrap_or_default();
-        let net_delta = NetworkStats {
-            recv_bytes: net_now.recv_bytes.saturating_sub(net_prev.recv_bytes),
-            sent_bytes: net_now.sent_bytes.saturating_sub(net_prev.sent_bytes),
-            recv_packets: net_now.recv_packets.saturating_sub(net_prev.recv_packets),
-            sent_packets: net_now.sent_packets.saturating_sub(net_prev.sent_packets),
-        };
-        self.prev_net = Some(net_now);
+        let net_delta = network_delta(&mut self.prev_net, read_network_stats());
 
         let gpu_stats = self.gpu.sample();
 
@@ -859,6 +851,27 @@ impl TelemetryLogger {
     }
 }
 
+/// Preserve the last valid counter on a read failure. Resetting it to zero
+/// would charge the next sample for all traffic since the node booted.
+fn network_delta(
+    previous: &mut Option<NetworkStats>,
+    current: Result<NetworkStats>,
+) -> NetworkStats {
+    let Ok(current) = current else {
+        return NetworkStats::default();
+    };
+    let delta = previous
+        .as_ref()
+        .map_or_else(NetworkStats::default, |prev| NetworkStats {
+            recv_bytes: current.recv_bytes.saturating_sub(prev.recv_bytes),
+            sent_bytes: current.sent_bytes.saturating_sub(prev.sent_bytes),
+            recv_packets: current.recv_packets.saturating_sub(prev.recv_packets),
+            sent_packets: current.sent_packets.saturating_sub(prev.sent_packets),
+        });
+    *previous = Some(current);
+    delta
+}
+
 /// Work out how much memory this job booked, and whether the figure is
 /// per-node.
 ///
@@ -946,6 +959,29 @@ impl Drop for TelemetryLogger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_read_failure_keeps_the_last_valid_baseline() {
+        let mut previous = None;
+        let first = NetworkStats {
+            recv_bytes: 1_000,
+            ..Default::default()
+        };
+        assert_eq!(
+            network_delta(&mut previous, Ok(first.clone())).recv_bytes,
+            0
+        );
+        assert_eq!(
+            network_delta(&mut previous, Err(anyhow::anyhow!("read failed"))).recv_bytes,
+            0
+        );
+        assert_eq!(previous, Some(first));
+        let next = NetworkStats {
+            recv_bytes: 1_250,
+            ..Default::default()
+        };
+        assert_eq!(network_delta(&mut previous, Ok(next)).recv_bytes, 250);
+    }
 
     #[test]
     fn test_format_bytes_human_round_trips() {

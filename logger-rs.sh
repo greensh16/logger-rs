@@ -95,6 +95,9 @@ _HT_LAUNCHER_HOSTS=()
 _HT_NODES=()
 _HT_NODES_FULL=()
 _HT_NUM_NODES=0
+_HT_PREV_EXIT_TRAP=""
+_HT_PREV_TERM_TRAP=""
+_HT_PREV_INT_TRAP=""
 
 _ht_warn() {
     echo "logger-rs: $*" >&2
@@ -131,7 +134,7 @@ _ht_booked_walltime() {
         | tr -d '\n' | sed 's/\t//g' \
         | grep -oE 'Resource_List\.walltime = [0-9]+:[0-9]{2}:[0-9]{2}' \
         | head -1 \
-        | awk '{print $3}'
+        | awk '{print $3}' || true
 }
 
 # PBS_NODEFILE lists one line per requested CPU, so the same host appears many
@@ -463,6 +466,9 @@ telemetry_start() {
     # Backstop for the cases telemetry_stop cannot cover: `set -e` aborting the
     # script, an early `exit`, or PBS sending SIGTERM at the walltime limit.
     # telemetry_stop disarms these when it runs normally.
+    _HT_PREV_EXIT_TRAP="$(trap -p EXIT)"
+    _HT_PREV_TERM_TRAP="$(trap -p TERM)"
+    _HT_PREV_INT_TRAP="$(trap -p INT)"
     trap '_ht_on_exit' EXIT
     trap '_ht_on_signal 143' TERM
     trap '_ht_on_signal 130' INT
@@ -471,17 +477,45 @@ telemetry_start() {
     return 0
 }
 
+# Restore a trap the job script installed before telemetry_start. A bare
+# `trap -` would silently discard the script's own cleanup and signal handlers.
+_ht_restore_trap() {
+    local declaration="$1" signal="$2"
+    if [[ -n "$declaration" ]]; then
+        eval "$declaration"
+    else
+        trap - "$signal"
+    fi
+}
+
+# `trap -p` returns a shell-quoted action followed by the signal name. Decode
+# that action so an EXIT trap already in progress can invoke the old handler:
+# merely restoring it at that point does not make Bash run it a second time.
+_ht_run_saved_trap() {
+    local declaration="$1" signal="$2" quoted action
+    [[ -n "$declaration" ]] || return 0
+    quoted="${declaration#trap -- }"
+    quoted="${quoted% $signal}"
+    eval "action=$quoted"
+    eval "$action"
+}
+
 # Traps. `$?` is read as the very first statement — anything before it, even an
 # assignment, overwrites the value that becomes the job's recorded outcome.
 _ht_on_exit() {
     local status=$?
-    telemetry_stop "$status"
+    telemetry_stop "$status" || true
+    _ht_run_saved_trap "$_HT_PREV_EXIT_TRAP" EXIT
     return "$status"
 }
 
 _ht_on_signal() {
     local forced="$1"
-    telemetry_stop "$forced"
+    telemetry_stop "$forced" || true
+    case "$forced" in
+        143) _ht_run_saved_trap "$_HT_PREV_TERM_TRAP" SIGTERM ;;
+        130) _ht_run_saved_trap "$_HT_PREV_INT_TRAP" SIGINT ;;
+    esac
     exit "$forced"
 }
 
@@ -501,15 +535,19 @@ telemetry_stop() {
         return "$status"
     fi
     _HT_ACTIVE=0
-    trap - EXIT TERM INT
+    _ht_restore_trap "$_HT_PREV_EXIT_TRAP" EXIT
+    _ht_restore_trap "$_HT_PREV_TERM_TRAP" TERM
+    _ht_restore_trap "$_HT_PREV_INT_TRAP" INT
 
     # Recorded before anything is shut down: this file is what the remote
     # loggers watch for, and what every logger reads to fill in exit_status.
-    echo "$status" > "$_HT_EXIT_STATUS_FILE" 2>/dev/null
+    if ! echo "$status" > "$_HT_EXIT_STATUS_FILE" 2>/dev/null; then
+        _ht_warn "could not write exit status to '$_HT_EXIT_STATUS_FILE'; continuing cleanup"
+    fi
 
     if [[ -n "$_HT_LOCAL_PID" ]]; then
-        kill -TERM "$_HT_LOCAL_PID" 2>/dev/null
-        wait "$_HT_LOCAL_PID" 2>/dev/null
+        kill -TERM "$_HT_LOCAL_PID" 2>/dev/null || true
+        wait "$_HT_LOCAL_PID" 2>/dev/null || true
         _HT_LOCAL_PID=""
     fi
 
@@ -543,9 +581,9 @@ telemetry_stop() {
             sleep 1
         done
         for _pid in "${_HT_LAUNCHER_PIDS[@]}"; do
-            kill -TERM "$_pid" 2>/dev/null
+            kill -TERM "$_pid" 2>/dev/null || true
         done
-        wait "${_HT_LAUNCHER_PIDS[@]}" 2>/dev/null
+        wait "${_HT_LAUNCHER_PIDS[@]}" 2>/dev/null || true
         _HT_LAUNCHER_PIDS=()
     fi
 
@@ -565,7 +603,7 @@ telemetry_stop() {
         fi
     fi
 
-    rm -f "$_HT_EXIT_STATUS_FILE"
+    rm -f "$_HT_EXIT_STATUS_FILE" || true
 
     # Preserves `set -e` semantics for the caller: `telemetry_stop` after a
     # failed command returns that command's status, so the script still fails.

@@ -13,19 +13,44 @@ use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::types::{MergedNotes, MergedSummary, NodeSummary, TelemetrySummary};
+use crate::types::{JobManifest, MergedNotes, MergedSummary, NodeSummary, TelemetrySummary};
 
 /// Find the per-node summary files for `job_id` in `dir`.
 ///
-/// Matches the layout the wrapper writes: `psutil_<jobid>_<host>.log.summary.json`.
-/// The merged output is itself named `psutil_<jobid>.summary.json`, so it is
-/// skipped explicitly — re-merging a directory must not fold a previous merge
-/// back into the totals.
+/// Prefer the manifest's exact filenames. Without one, inspect the embedded
+/// job id so custom output names are still mergeable and neighbouring numeric
+/// job ids cannot be confused.
 pub fn find_node_summaries(dir: &Path, job_id: &str) -> Result<Vec<PathBuf>> {
+    let manifest_path = dir.join(crate::manifest::manifest_filename(job_id));
+    if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+        if let Ok(manifest) = serde_json::from_str::<JobManifest>(&content) {
+            if manifest.job_id == job_id {
+                let mut found: Vec<PathBuf> = manifest
+                    .files
+                    .iter()
+                    .filter_map(|entry| {
+                        let name = Path::new(&entry.summary);
+                        // A manifest entry is a basename, never a path outside
+                        // the merge directory.
+                        if name.file_name()? != name.as_os_str() {
+                            return None;
+                        }
+                        let path = dir.join(name);
+                        path.is_file().then_some(path)
+                    })
+                    .collect();
+                found.sort();
+                found.dedup();
+                return Ok(found);
+            }
+        }
+    }
+
     let entries = std::fs::read_dir(dir)
         .with_context(|| format!("Failed to read merge directory {:?}", dir))?;
 
     let mut found = Vec::new();
+    let conventional_prefix = format!("psutil_{}_", crate::host::sanitise_for_filename(job_id));
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -35,13 +60,20 @@ pub fn find_node_summaries(dir: &Path, job_id: &str) -> Result<Vec<PathBuf>> {
         if !name.ends_with(".summary.json") {
             continue;
         }
-        if !name.contains(job_id) {
-            continue;
-        }
         if is_merged_summary_name(name, job_id) {
             continue;
         }
-        found.push(path);
+        // A malformed summary with the conventional exact job-id prefix still
+        // belongs to this merge, so let the loader report it as unreadable.
+        let conventional = name.starts_with(&conventional_prefix);
+        let embedded_id_matches = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|value| value.get("job_id")?.as_str().map(str::to_owned))
+            .is_some_and(|id| id == job_id);
+        if conventional || embedded_id_matches {
+            found.push(path);
+        }
     }
 
     // Deterministic order so the per_node array is stable between runs.
@@ -94,7 +126,10 @@ pub fn merged_summary_filename(job_id: &str) -> String {
 /// A single corrupt or half-written file must not sink the merge — the whole
 /// point is to salvage a job-level view from whatever the nodes managed to
 /// write. Failures are reported to stderr and counted.
-pub fn load_node_summaries(paths: &[PathBuf]) -> (Vec<TelemetrySummary>, Vec<String>) {
+pub fn load_node_summaries(
+    paths: &[PathBuf],
+    job_id: &str,
+) -> (Vec<TelemetrySummary>, Vec<String>) {
     let mut summaries = Vec::new();
     let mut failures = Vec::new();
 
@@ -104,7 +139,14 @@ pub fn load_node_summaries(paths: &[PathBuf]) -> (Vec<TelemetrySummary>, Vec<Str
             .and_then(|text| {
                 serde_json::from_str::<TelemetrySummary>(&text).map_err(|e| e.to_string())
             }) {
-            Ok(summary) => summaries.push(summary),
+            Ok(summary) if summary.job_id == job_id => summaries.push(summary),
+            Ok(summary) => {
+                eprintln!(
+                    "WARNING: skipping summary {:?}: job id {:?} does not match {:?}",
+                    path, summary.job_id, job_id
+                );
+                failures.push(path.display().to_string());
+            }
             Err(e) => {
                 eprintln!("WARNING: skipping unreadable summary {:?}: {}", path, e);
                 failures.push(path.display().to_string());
@@ -605,6 +647,57 @@ mod tests {
     }
 
     #[test]
+    fn test_find_node_summaries_matches_embedded_id_without_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut wanted = node("a", 0, 4, 1.0, 0.0);
+        wanted.job_id = "123".into();
+        let mut neighbour = node("b", 0, 4, 1.0, 0.0);
+        neighbour.job_id = "1234".into();
+        let custom = dir.path().join("custom-name.log.summary.json");
+        let other = dir.path().join("psutil_1234_b.log.summary.json");
+        std::fs::write(&custom, serde_json::to_string(&wanted).unwrap()).unwrap();
+        std::fs::write(&other, serde_json::to_string(&neighbour).unwrap()).unwrap();
+
+        assert_eq!(
+            find_node_summaries(dir.path(), "123").unwrap(),
+            vec![custom]
+        );
+    }
+
+    #[test]
+    fn test_manifest_selects_only_its_files_and_loader_checks_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let job_id = "12345.gadi-pbs";
+        let manifest = crate::manifest::build_manifest(
+            job_id,
+            "sam",
+            "normal",
+            "my_model",
+            "ab12",
+            "custom_{host}.log",
+            &["a".into()],
+            String::new(),
+        );
+        crate::manifest::write_manifest(dir.path(), &manifest).unwrap();
+        let listed = dir.path().join(&manifest.files[0].summary);
+        let unlisted = dir.path().join("psutil_12345.gadi-pbs_b.log.summary.json");
+        let mut wrong = node("a", 0, 4, 1.0, 0.0);
+        wrong.job_id = "another-job".into();
+        std::fs::write(&listed, serde_json::to_string(&wrong).unwrap()).unwrap();
+        std::fs::write(
+            &unlisted,
+            serde_json::to_string(&node("b", 1, 4, 1.0, 0.0)).unwrap(),
+        )
+        .unwrap();
+
+        let paths = find_node_summaries(dir.path(), job_id).unwrap();
+        assert_eq!(paths, vec![listed]);
+        let (summaries, failures) = load_node_summaries(&paths, job_id);
+        assert!(summaries.is_empty());
+        assert_eq!(failures.len(), 1);
+    }
+
+    #[test]
     fn test_load_skips_corrupt_files_without_failing() {
         let dir = tempfile::tempdir().unwrap();
         let good = dir.path().join("good.summary.json");
@@ -618,7 +711,7 @@ mod tests {
         // Half-written, as if the node died mid-flush.
         std::fs::write(&bad, "{\"user_id\": \"sam\", \"job_i").unwrap();
 
-        let (summaries, failures) = load_node_summaries(&[good, bad]);
+        let (summaries, failures) = load_node_summaries(&[good, bad], "12345.gadi-pbs");
 
         assert_eq!(summaries.len(), 1, "the good summary must still be usable");
         assert_eq!(failures.len(), 1);
