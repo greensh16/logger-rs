@@ -27,7 +27,7 @@ pub struct Args {
     pub interval: f64,
 
     /// How often to poll GPUs, in seconds. GPU utilisation does not need the
-    /// same resolution as CPU, and each poll forks nvidia-smi.
+    /// same resolution as CPU, and each poll forks nvidia-smi or amd-smi.
     #[arg(long, default_value = "5.0", env = "GPU_INTERVAL")]
     pub gpu_interval: f64,
 

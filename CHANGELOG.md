@@ -52,6 +52,8 @@ This release fixes that, and lays the groundwork for Slurm.
 - `testing/probe_setonix.slurm`, a read-only diagnostic job that reports a
   Slurm site's cgroup layout and GPU tooling, and
   `testing/test_telemetry.slurm`, a two-node measured CPU test.
+- AMD GPU sampling through `amd-smi metric --csv`, filtered by
+  `ROCR_VISIBLE_DEVICES`, plus a Setonix GPU telemetry acceptance job.
 
 ### Changed
 
@@ -75,15 +77,18 @@ This release fixes that, and lays the groundwork for Slurm.
 - Setonix `work` partition CPU telemetry passed a two-node end-to-end test
   (job 51291742, 2026-10-21): both nodes reported from the job cgroup and
   recorded 39.38 core-seconds for a 40 core-second workload. Job-level memory
-  counters were readable, but memory accuracy under load was not tested.
-  Other Slurm sites and GPU partitions have not been validated.
+  counters were readable. The extended test (job 51292897) also captured a
+  256 MiB allocation on both nodes. The GPU probe (job 51292904) confirmed
+  `amd-smi` access inside an allocated GPU step. GPU telemetry itself has not
+  yet been tested on Setonix; other Slurm sites also remain unvalidated.
 
 ### Known limitations
 
 - Setonix does not expose job-level cgroup I/O at the observed job root, and
   cgroup v2 does not expose per-core CPU breakdown. Network counters describe
   each whole node rather than only this job.
-- AMD GPUs (ROCm) are not supported. GPU metrics remain NVIDIA-only.
+- AMD GPU sampling has not yet been validated against a live Setonix telemetry
+  run or a known GPU workload.
 - A checkpointed node's totals are a lower bound, understated by up to one
   checkpoint period. The NDJSON stream runs closer to the true end of the job;
   reconstructing exact totals from it is not implemented.

@@ -12,11 +12,9 @@ sbatch -A YOUR_ACCOUNT testing/test_telemetry.slurm
 The test runs one CPU-bound task per node for 20 seconds, then a separate
 `srun` step that touches and holds 256 MiB per node. It checks the two node
 summaries and their merge, job-level cgroup selection, CPU time, and kernel
-memory peaks. The memory phase was added after job 51291742 (2026-10-21)
-passed the CPU checks: 19.91 and 19.46 core-seconds per node, 39.38 in the
-merge, no missing or partial nodes, and a 300-second booking. The extended
-test has not yet run on Setonix. Its output is under
-`testing/slurm-test-<jobid>/`.
+memory peaks. The extended test passed as job 51292897 (2026-10-21): 39.40
+core-seconds merged, both memory peaks above 256 MiB, and no missing nodes.
+Its output is under `testing/slurm-test-<jobid>/`.
 
 To test checkpoints and shutdown at the scheduler's time limit, submit a
 separate two-minute job, then run the checker after it ends:
@@ -40,13 +38,27 @@ sbatch -A YOUR_ACCOUNT-gpu testing/probe_setonix_gpu.slurm
 
 The probe prints Slurm's GPU assignment, the step's cgroup, visible-device
 variables, and output from available `amd-smi` and `rocm-smi` commands. It
-does not run a GPU workload. This output is needed before adding AMD GPU
-sampling and a useful GPU acceptance test.
+does not run a GPU workload. Job 51292904 confirmed that the allocated MI250X
+appears as device 0 inside the step (`ROCR_VISIBLE_DEVICES=0`), although
+`SLURM_JOB_GPUS=6` names its physical Slurm index. `amd-smi metric --csv`
+reported GPU use, VRAM, power and temperature.
 
-Setonix's `work` partition exposed job-level CPU and memory accounting, but
-the completed run only checked CPU time against a known load. It did not
-exercise AMD GPUs. No job-level `io.stat` was exposed; cgroup v2 has no
-per-core CPU breakdown. Network counters remain node-wide.
+After rebuilding the binary with AMD GPU sampling, submit the telemetry
+acceptance test. It samples the allocated GPU while idle and checks the NDJSON
+and summary fields:
+
+```bash
+sbatch -A YOUR_ACCOUNT-gpu testing/test_gpu_telemetry.slurm
+```
+
+This GPU telemetry test has not yet run on Setonix. It verifies that readings
+are present and assigned to the job; it does not validate utilization against
+a known GPU load.
+
+Setonix's `work` partition exposed job-level CPU and memory accounting under
+known loads. The GPU probe exercised AMD SMI but not the logger. No job-level
+`io.stat` was exposed; cgroup v2 has no per-core CPU breakdown. Network
+counters remain node-wide.
 
 ## Gadi (PBS)
 

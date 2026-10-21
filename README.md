@@ -52,11 +52,12 @@ On a multi-node job, `telemetry_start` launches a logger on **every node** and
 `telemetry_stop` merges their summaries into one job-level file.
 
 The [Setonix Slurm test](testing/test_telemetry.slurm) has validated this path
-for a two-node CPU job: both nodes measured the job's cgroup, and the merged
-CPU total matched a known workload. Job-level memory counters were readable,
-though memory accuracy under load was not tested. On that site, job-level
-cgroup I/O and per-core CPU breakdown are unavailable; network counters are
-node-wide. AMD GPU telemetry is not implemented. Other Slurm sites still need
+for a two-node CPU and memory job: both nodes measured the job's cgroup, the
+merged CPU total matched a known workload, and both kernel memory peaks
+captured a 256 MiB allocation. On that site, job-level cgroup I/O and per-core
+CPU breakdown are unavailable; network counters are node-wide. AMD GPU
+sampling is implemented from `amd-smi` output but awaits an on-cluster
+[telemetry test](testing/test_gpu_telemetry.slurm). Other Slurm sites still need
 validation.
 
 A complete, commented job script is in [`examples/gadi-job.pbs`](examples/gadi-job.pbs)

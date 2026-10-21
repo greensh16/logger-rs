@@ -1,17 +1,18 @@
-//! GPU metrics via `nvidia-smi`.
+//! GPU metrics via `nvidia-smi` or `amd-smi`.
 //!
 //! Two things to know about these numbers:
 //!
-//! 1. **Scope.** `nvidia-smi` reports every GPU on the host. When
-//!    `CUDA_VISIBLE_DEVICES` is set — which PBS and Slurm both do for GPU jobs —
-//!    the readings are filtered down to the GPUs actually assigned to this job,
+//! 1. **Scope.** When `CUDA_VISIBLE_DEVICES` (NVIDIA) or
+//!    `ROCR_VISIBLE_DEVICES` (AMD) is set, readings are filtered to the assigned GPUs,
 //!    and `GpuStats::job_scoped` is set. When it is unset we cannot tell which
 //!    GPUs are ours, so the figures stay node-wide and are labelled as such.
+//!    Slurm's `SLURM_JOB_GPUS` is deliberately ignored here: its physical indices
+//!    can differ from the GPU indices seen inside a step's device cgroup.
 //! 2. **Cost.** Each poll forks a process. `nvidia-smi` typically takes 50-200ms
 //!    and can block on a busy GPU, so polling it at the 0.5s sample interval both
-//!    cost real time and stretched the sampling tick. [`GpuSampler`] probes once
-//!    for availability and then polls on its own slower cadence, reusing the last
-//!    reading in between.
+//!    cost real time and stretched the sampling tick. [`GpuSampler`] selects an
+//!    available vendor tool and then polls on its own slower cadence, reusing
+//!    the last reading in between.
 
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -19,8 +20,8 @@ use std::time::{Duration, Instant};
 /// GPU statistics, one entry per GPU in scope.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GpuStats {
-    /// Node GPU index for each entry, so a reading can be tied back to a
-    /// physical device even after filtering.
+    /// Vendor-tool GPU index for each entry. A step's device cgroup may
+    /// renumber this relative to Slurm's physical GPU index.
     pub indices: Vec<u32>,
     /// GPU UUIDs. Used to resolve `CUDA_VISIBLE_DEVICES` when it is expressed as
     /// UUIDs rather than indices; not written to the telemetry stream.
@@ -60,11 +61,17 @@ impl GpuVisibility {
 
 /// Read the GPU assignment from the environment.
 ///
-/// `CUDA_VISIBLE_DEVICES` is set by PBS and Slurm for GPU jobs;
-/// `NVIDIA_VISIBLE_DEVICES` is the container-runtime equivalent and is checked
-/// as a fallback.
+/// Prefer the vendor-specific runtime mask. On Setonix, for example,
+/// `ROCR_VISIBLE_DEVICES=0` and `SLURM_JOB_GPUS=6` refer to the same allocated
+/// device in different index spaces.
 pub fn visibility_from_env() -> GpuVisibility {
-    for var in ["CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES"] {
+    for var in [
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "NVIDIA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ] {
         if let Ok(raw) = std::env::var(var) {
             let vis = parse_visible_devices(Some(&raw));
             if vis != GpuVisibility::All {
@@ -162,7 +169,13 @@ fn copy_at<T: Copy + Default>(v: &[T], i: usize) -> T {
     v.get(i).copied().unwrap_or_default()
 }
 
-/// Polls `nvidia-smi` at a bounded rate, caching between polls.
+#[derive(Debug, Clone, Copy)]
+enum GpuBackend {
+    Nvidia,
+    Amd,
+}
+
+/// Polls a vendor tool at a bounded rate, caching between polls.
 #[derive(Debug)]
 pub struct GpuSampler {
     /// `None` until the first probe. `Some(false)` disables all future polling.
@@ -171,6 +184,7 @@ pub struct GpuSampler {
     last_poll: Option<Instant>,
     cached: GpuStats,
     visibility: GpuVisibility,
+    backend: Option<GpuBackend>,
 }
 
 impl GpuSampler {
@@ -188,6 +202,7 @@ impl GpuSampler {
                 ..Default::default()
             },
             visibility,
+            backend: None,
         }
     }
 
@@ -209,7 +224,7 @@ impl GpuSampler {
             return self.empty();
         }
 
-        // The scheduler told us this job has no GPUs; never fork nvidia-smi.
+        // The scheduler told us this job has no GPUs; never fork a vendor tool.
         if self.visibility == GpuVisibility::NoneVisible {
             self.available = Some(false);
             return self.empty();
@@ -227,7 +242,23 @@ impl GpuSampler {
 
         self.last_poll = Some(now);
 
-        match run_nvidia_smi() {
+        let reading = match self.backend {
+            Some(GpuBackend::Nvidia) => run_nvidia_smi(),
+            Some(GpuBackend::Amd) => run_amd_smi(),
+            None => {
+                if let Some(stats) = run_nvidia_smi().filter(|s| s.gpu_count() > 0) {
+                    self.backend = Some(GpuBackend::Nvidia);
+                    Some(stats)
+                } else if let Some(stats) = run_amd_smi().filter(|s| s.gpu_count() > 0) {
+                    self.backend = Some(GpuBackend::Amd);
+                    Some(stats)
+                } else {
+                    None
+                }
+            }
+        };
+
+        match reading {
             Some(raw) => {
                 let stats = filter_to_visible(&raw, &self.visibility);
                 // A host with the driver present but no GPUs in scope is still
@@ -263,6 +294,105 @@ fn run_nvidia_smi() -> Option<GpuStats> {
     Some(parse_nvidia_smi_csv(&String::from_utf8_lossy(
         &output.stdout,
     )))
+}
+
+/// Run AMD SMI once. Setonix's ROCm 6.4.1 exposes the readings we need in
+/// `metric --csv`; the CLI's group warning is printed to stderr, not the CSV.
+fn run_amd_smi() -> Option<GpuStats> {
+    let output = Command::new("amd-smi")
+        .args(["metric", "--csv"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(parse_amd_smi_csv(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Parse AMD SMI's named CSV columns. Its full metric output contains quoted
+/// lists with commas, so splitting rows on every comma would shift the VRAM
+/// and temperature fields. VRAM values are reported in MB by the CLI.
+pub fn parse_amd_smi_csv(stdout: &str) -> GpuStats {
+    let mut stats = GpuStats::default();
+    let mut lines = stdout.lines();
+    let Some(headers) = lines
+        .find(|line| line.trim_start().starts_with("gpu,"))
+        .map(parse_csv_row)
+    else {
+        return stats;
+    };
+
+    let column = |name: &str| headers.iter().position(|h| h == name);
+    let (Some(gpu), Some(util), Some(used), Some(total)) = (
+        column("gpu"),
+        column("gfx_activity"),
+        column("used_vram"),
+        column("total_vram"),
+    ) else {
+        return stats;
+    };
+    let edge = column("edge");
+    let hotspot = column("hotspot");
+    let power = column("socket_power");
+
+    for line in lines {
+        let values = parse_csv_row(line);
+        let Some(index) = values.get(gpu).and_then(|v| v.parse::<u32>().ok()) else {
+            continue;
+        };
+        if [util, used, total].iter().any(|&i| values.get(i).is_none()) {
+            continue;
+        }
+        let metric = |index: Option<usize>| {
+            index
+                .and_then(|i| values.get(i))
+                .map(|v| parse_f64_or_zero(v))
+                .unwrap_or(0.0)
+        };
+        let temperature = edge
+            .and_then(|i| values.get(i))
+            .and_then(|v| parse_f64(v))
+            .unwrap_or_else(|| metric(hotspot));
+
+        stats.indices.push(index);
+        stats.uuids.push(String::new());
+        stats.utilization.push(metric(Some(util)));
+        stats
+            .memory_used
+            .push((metric(Some(used)) * 1024.0 * 1024.0) as u64);
+        stats
+            .memory_total
+            .push((metric(Some(total)) * 1024.0 * 1024.0) as u64);
+        stats.temperature.push(temperature);
+        stats.power.push(metric(power));
+    }
+
+    stats
+}
+
+fn parse_csv_row(line: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut chars = line.chars().peekable();
+    let mut quoted = false;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                cell.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                cells.push(cell.trim().to_string());
+                cell.clear();
+            }
+            _ => cell.push(ch),
+        }
+    }
+    cells.push(cell.trim().to_string());
+    cells
 }
 
 /// Parse `nvidia-smi --format=csv,noheader,nounits` output.
@@ -310,7 +440,13 @@ pub fn parse_nvidia_smi_csv(stdout: &str) -> GpuStats {
 }
 
 fn parse_f64_or_zero(s: &str) -> f64 {
-    s.trim().parse::<f64>().unwrap_or(0.0)
+    parse_f64(s).unwrap_or(0.0)
+}
+
+fn parse_f64(s: &str) -> Option<f64> {
+    s.split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<f64>().ok())
 }
 
 #[cfg(test)]
@@ -372,6 +508,41 @@ mod tests {
     fn test_parse_nvidia_smi_csv_ignores_short_rows() {
         assert_eq!(parse_nvidia_smi_csv("0, 45\n").gpu_count(), 0);
         assert_eq!(parse_nvidia_smi_csv("").gpu_count(), 0);
+    }
+
+    #[test]
+    fn test_parse_setonix_amd_smi_metric_csv() {
+        let output = "WARNING: missing render, video groups\n\
+gpu,gfx_activity,vcn_activity,socket_power,edge,hotspot,total_vram,used_vram\n\
+0,0,\"['N/A', 'N/A']\",216,35,40,65520,10\n";
+        let stats = parse_amd_smi_csv(output);
+        assert_eq!(stats.indices, vec![0]);
+        assert_eq!(stats.utilization, vec![0.0]);
+        assert_eq!(stats.memory_total, vec![65520 * 1024 * 1024]);
+        assert_eq!(stats.memory_used, vec![10 * 1024 * 1024]);
+        assert_eq!(stats.temperature, vec![35.0]);
+        assert_eq!(stats.power, vec![216.0]);
+        assert_eq!(stats.uuids, vec![String::new()]);
+    }
+
+    #[test]
+    fn test_parse_amd_smi_multiple_gpus_and_missing_sensor() {
+        let output = "gpu,total_vram,used_vram,gfx_activity,edge,hotspot,socket_power\n\
+0,65520,10,0,35,40,216\n\
+1,65520,128,85,N/A,72,250\n";
+        let all = parse_amd_smi_csv(output);
+        let assigned = filter_to_visible(&all, &parse_visible_devices(Some("1")));
+        assert_eq!(assigned.indices, vec![1]);
+        assert_eq!(assigned.utilization, vec![85.0]);
+        assert_eq!(assigned.memory_used, vec![128 * 1024 * 1024]);
+        assert_eq!(assigned.temperature, vec![72.0]);
+        assert_eq!(assigned.power, vec![250.0]);
+        assert!(assigned.job_scoped);
+    }
+
+    #[test]
+    fn test_parse_amd_smi_rejects_unrecognised_header() {
+        assert_eq!(parse_amd_smi_csv("gpu,VRAM\n0,65520\n").gpu_count(), 0);
     }
 
     #[test]

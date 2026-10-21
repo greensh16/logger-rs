@@ -499,16 +499,17 @@ fn check_binary(r: &mut Report) {
 }
 
 fn check_gpu(r: &mut Report) {
-    let found = std::env::var("PATH")
-        .is_ok_and(|path| std::env::split_paths(&path).any(|p| p.join("nvidia-smi").is_file()));
+    let found = |tool: &str| {
+        std::env::var("PATH")
+            .is_ok_and(|path| std::env::split_paths(&path).any(|p| p.join(tool).is_file()))
+    };
 
-    if found {
+    if found("nvidia-smi") {
         r.ok("gpu", "nvidia-smi present, GPU metrics will be collected");
+    } else if found("amd-smi") {
+        r.ok("gpu", "amd-smi present; allocated AMD GPUs can be sampled");
     } else {
-        r.ok(
-            "gpu",
-            "no nvidia-smi — GPU metrics skipped, which is correct on a CPU-only node",
-        );
+        r.ok("gpu", "no nvidia-smi or amd-smi — GPU metrics skipped");
     }
 }
 

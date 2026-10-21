@@ -154,21 +154,23 @@ pub struct TelemetrySample {
 
     /// GPU metrics, one entry per GPU in scope.
     ///
-    /// Scope depends on `gpu_is_node_scoped`: when `CUDA_VISIBLE_DEVICES` is set
-    /// these are the job's own GPUs, otherwise they cover the whole node.
+    /// Scope depends on `gpu_is_node_scoped`: when `CUDA_VISIBLE_DEVICES` or
+    /// `ROCR_VISIBLE_DEVICES` is set these are the job's GPUs, otherwise they
+    /// cover the whole node.
     pub gpu_utilization: Vec<f64>,
     pub gpu_memory_used: Vec<u64>,
     pub gpu_memory_total: Vec<u64>,
     pub gpu_temperature: Vec<f64>,
     pub gpu_power: Vec<f64>,
 
-    /// Node GPU index for each entry above, so a reading stays tied to a
-    /// physical device even after filtering to the job's GPUs.
+    /// Vendor-tool GPU index for each entry above. A step's device cgroup may
+    /// renumber this relative to Slurm's physical GPU index.
     #[serde(default)]
     pub gpu_indices: Vec<u32>,
 
     /// False when the GPU figures were narrowed to this job via
-    /// `CUDA_VISIBLE_DEVICES`; true when they describe every GPU on the host.
+    /// a vendor-specific visible-device mask; true when they describe every
+    /// GPU on the host.
     #[serde(default = "default_true")]
     pub gpu_is_node_scoped: bool,
 }

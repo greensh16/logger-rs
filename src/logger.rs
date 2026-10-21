@@ -543,8 +543,8 @@ impl TelemetryLogger {
             gpu_temperature: gpu_stats.temperature,
             gpu_power: gpu_stats.power,
             gpu_indices: gpu_stats.indices,
-            // False once CUDA_VISIBLE_DEVICES has let us narrow the readings to
-            // the GPUs actually assigned to this job.
+            // False once a vendor-specific visible-device mask has narrowed the
+            // readings to the GPUs actually assigned to this job.
             gpu_is_node_scoped: !gpu_stats.job_scoped,
         })
     }
