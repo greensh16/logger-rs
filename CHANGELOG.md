@@ -79,8 +79,12 @@ This release fixes that, and lays the groundwork for Slurm.
   recorded 39.38 core-seconds for a 40 core-second workload. Job-level memory
   counters were readable. The extended test (job 51292897) also captured a
   256 MiB allocation on both nodes. The GPU probe (job 51292904) confirmed
-  `amd-smi` access inside an allocated GPU step. GPU telemetry itself has not
-  yet been tested on Setonix; other Slurm sites also remain unvalidated.
+  `amd-smi` access inside an allocated GPU step. The walltime test (job
+  51292900) confirmed that two checkpoints and the merge survived the time
+  limit, with one node's final counters marked partial. GPU telemetry test
+  51293735 ran an older binary and collected no GPU readings; the updated
+  sampler has not yet been validated on Setonix. Other Slurm sites also remain
+  unvalidated.
 
 ### Known limitations
 

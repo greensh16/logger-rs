@@ -26,7 +26,8 @@ def main() -> int:
     if os.path.isfile(marker):
         with open(marker, encoding="utf-8") as f:
             observation = f.read().strip()
-        check(observation.startswith("PASS:"), observation)
+        check(observation.startswith("PASS:"),
+              "mid-run checkpoints: " + observation.partition(": ")[2])
 
     node_files = sorted(
         glob.glob(os.path.join(outdir, f"psutil_{job_id}_*.log.summary.json"))

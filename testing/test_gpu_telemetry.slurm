@@ -34,13 +34,17 @@ mkdir -p "$OUTDIR" || fail "cannot create $OUTDIR"
 if type module >/dev/null 2>&1; then
     module load rocm craype-accel-amd-gfx90a || fail "could not load ROCm"
 fi
+command -v amd-smi >/dev/null 2>&1 || fail "amd-smi is unavailable inside the GPU step"
 
 echo "job: $JOB_ID"
 echo "step host: $(hostname)"
 echo "ROCR_VISIBLE_DEVICES: ${ROCR_VISIBLE_DEVICES:-<unset>}"
 echo "output: $OUTDIR"
-"$BIN" --check --output "$OUTDIR/psutil_{jobid}_{host}.log" \
-    || fail "logger-rs --check failed"
+preflight="$("$BIN" --check --output "$OUTDIR/psutil_{jobid}_{host}.log" 2>&1)" \
+    || fail "logger-rs --check failed: $preflight"
+printf '%s\n' "$preflight"
+[[ "$preflight" == *"amd-smi present; allocated AMD GPUs can be sampled"* ]] \
+    || fail "binary predates AMD support: rebuild the current source with cargo build --release, then copy target/release/logger-rs to $BIN"
 
 source "$LIB"
 telemetry_start --telemetry-bin "$BIN" --gpu-interval 2 \

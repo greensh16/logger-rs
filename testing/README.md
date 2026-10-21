@@ -26,8 +26,10 @@ python3 testing/check_walltime.py JOB_ID
 
 The walltime job deliberately times out. It records whether both node
 checkpoint files existed during the run, and the after-job checker verifies
-the per-node summaries and merged summary. This test has not yet run on
-Setonix.
+the per-node summaries and merged summary. Job 51292900 passed: both nodes
+checkpointed during the run and the merged summary survived the time limit.
+One node finished cleanly with exit status 143; the other remained partial, so
+its counters are lower bounds through its last checkpoint.
 
 With access to a GPU account, capture GPU visibility and AMD tooling from an
 actual GPU step:
@@ -43,17 +45,21 @@ appears as device 0 inside the step (`ROCR_VISIBLE_DEVICES=0`), although
 `SLURM_JOB_GPUS=6` names its physical Slurm index. `amd-smi metric --csv`
 reported GPU use, VRAM, power and temperature.
 
-After rebuilding the binary with AMD GPU sampling, submit the telemetry
-acceptance test. It samples the allocated GPU while idle and checks the NDJSON
-and summary fields:
+After rebuilding the binary with AMD GPU sampling and copying it to the
+repository-root `logger-rs` path, submit the telemetry acceptance test. It
+checks the preflight message for AMD support before sampling the allocated GPU
+while idle, then checks the NDJSON and summary fields:
 
 ```bash
 sbatch -A YOUR_ACCOUNT-gpu testing/test_gpu_telemetry.slurm
 ```
 
-This GPU telemetry test has not yet run on Setonix. It verifies that readings
-are present and assigned to the job; it does not validate utilization against
-a known GPU load.
+Job 51293735 ran the acceptance script with an older binary: its preflight
+said "no nvidia-smi" and it produced no GPU readings. The updated script now
+stops immediately with a rebuild instruction when it detects that binary.
+The AMD sampler has not yet been exercised by a live Setonix job. The test
+verifies that readings are present and assigned to the job; it does not
+validate utilization against a known GPU load.
 
 Setonix's `work` partition exposed job-level CPU and memory accounting under
 known loads. The GPU probe exercised AMD SMI but not the logger. No job-level
