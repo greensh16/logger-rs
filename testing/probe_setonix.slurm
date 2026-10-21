@@ -144,13 +144,17 @@ if command -v rocm-smi >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-hr "5. logger-rs --check, if the module is available"
-if command -v logger-rs >/dev/null 2>&1; then
-  echo "  logger-rs at $(command -v logger-rs)"
-  logger-rs --version 2>&1 | sed 's/^/     /'
-  logger-rs --check 2>&1 | sed 's/^/     /'
+hr "5. logger-rs --check, if the binary is available"
+PROBE_BIN="${LOGGER_RS_BIN:-${SLURM_SUBMIT_DIR:-$PWD}/logger-rs}"
+if [[ ! -x "$PROBE_BIN" ]] && command -v logger-rs >/dev/null 2>&1; then
+  PROBE_BIN="$(command -v logger-rs)"
+fi
+if [[ -x "$PROBE_BIN" ]]; then
+  echo "  logger-rs at $PROBE_BIN"
+  "$PROBE_BIN" --version 2>&1 | sed 's/^/     /'
+  "$PROBE_BIN" --check 2>&1 | sed 's/^/     /'
 else
-  echo "  logger-rs not on PATH — build it for the target and add it, or skip."
+  echo "  logger-rs not executable at $PROBE_BIN or on PATH."
   echo "  (This section is optional; sections 1-4 are the ones that matter.)"
 fi
 
