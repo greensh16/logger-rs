@@ -1,4 +1,54 @@
-# On-Gadi test
+# On-cluster tests
+
+## Setonix (Slurm)
+
+From the repository root on Setonix, with a current `logger-rs` binary and
+`logger-rs.sh` in that directory:
+
+```bash
+sbatch -A YOUR_ACCOUNT testing/test_telemetry.slurm
+```
+
+The test runs one CPU-bound task per node for 20 seconds, then a separate
+`srun` step that touches and holds 256 MiB per node. It checks the two node
+summaries and their merge, job-level cgroup selection, CPU time, and kernel
+memory peaks. The memory phase was added after job 51291742 (2026-10-21)
+passed the CPU checks: 19.91 and 19.46 core-seconds per node, 39.38 in the
+merge, no missing or partial nodes, and a 300-second booking. The extended
+test has not yet run on Setonix. Its output is under
+`testing/slurm-test-<jobid>/`.
+
+To test checkpoints and shutdown at the scheduler's time limit, submit a
+separate two-minute job, then run the checker after it ends:
+
+```bash
+sbatch -A YOUR_ACCOUNT testing/test_walltime.slurm
+python3 testing/check_walltime.py JOB_ID
+```
+
+The walltime job deliberately times out. It records whether both node
+checkpoint files existed during the run, and the after-job checker verifies
+the per-node summaries and merged summary. This test has not yet run on
+Setonix.
+
+With access to a GPU account, capture GPU visibility and AMD tooling from an
+actual GPU step:
+
+```bash
+sbatch -A YOUR_ACCOUNT-gpu testing/probe_setonix_gpu.slurm
+```
+
+The probe prints Slurm's GPU assignment, the step's cgroup, visible-device
+variables, and output from available `amd-smi` and `rocm-smi` commands. It
+does not run a GPU workload. This output is needed before adding AMD GPU
+sampling and a useful GPU acceptance test.
+
+Setonix's `work` partition exposed job-level CPU and memory accounting, but
+the completed run only checked CPU time against a known load. It did not
+exercise AMD GPUs. No job-level `io.stat` was exposed; cgroup v2 has no
+per-core CPU breakdown. Network counters remain node-wide.
+
+## Gadi (PBS)
 
 `test_telemetry.pbs` is an end-to-end test of the logger on real hardware. It
 runs a workload whose resource usage is known in advance, then **checks** the

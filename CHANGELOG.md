@@ -44,11 +44,14 @@ This release fixes that, and lays the groundwork for Slurm.
   as its own banner.
 - Slurm job identity and booked resources — job id, partition, job name,
   account, walltime and memory are read from `SLURM_*` when PBS supplies
-  nothing. **This is not yet Slurm support**: cgroup handling and the shell
-  library's launch path are still PBS-only. See *Known limitations*.
+  nothing. On Setonix, booked walltime falls back to the exported job start
+  and end timestamps.
+- Slurm cgroup v2 job-root discovery and a multi-node `srun` launch path.
+  The latter handles Setonix's conflicting inherited CPU settings without
+  changing the workload's environment.
 - `testing/probe_setonix.slurm`, a read-only diagnostic job that reports a
-  Slurm site's cgroup layout and GPU tooling. It measures nothing and changes
-  nothing; its output is what the remaining Slurm work will be written against.
+  Slurm site's cgroup layout and GPU tooling, and
+  `testing/test_telemetry.slurm`, a two-node measured CPU test.
 
 ### Changed
 
@@ -67,11 +70,19 @@ This release fixes that, and lays the groundwork for Slurm.
 - README: CI, release, licence, latest-release and Rust-version badges, and a
   support section.
 
+### Validation
+
+- Setonix `work` partition CPU telemetry passed a two-node end-to-end test
+  (job 51291742, 2026-10-21): both nodes reported from the job cgroup and
+  recorded 39.38 core-seconds for a 40 core-second workload. Job-level memory
+  counters were readable, but memory accuracy under load was not tested.
+  Other Slurm sites and GPU partitions have not been validated.
+
 ### Known limitations
 
-- Slurm is **not** supported end to end. Only job identity and booked resources
-  read from the environment; the cgroup layer and the multi-node launch path
-  still assume PBS. Do not expect a Slurm job to produce useful telemetry yet.
+- Setonix does not expose job-level cgroup I/O at the observed job root, and
+  cgroup v2 does not expose per-core CPU breakdown. Network counters describe
+  each whole node rather than only this job.
 - AMD GPUs (ROCm) are not supported. GPU metrics remain NVIDIA-only.
 - A checkpointed node's totals are a lower bound, understated by up to one
   checkpoint period. The NDJSON stream runs closer to the true end of the job;

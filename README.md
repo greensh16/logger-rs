@@ -51,6 +51,14 @@ and makes the dashboard recommend fewer cores than the science actually needs.
 On a multi-node job, `telemetry_start` launches a logger on **every node** and
 `telemetry_stop` merges their summaries into one job-level file.
 
+The [Setonix Slurm test](testing/test_telemetry.slurm) has validated this path
+for a two-node CPU job: both nodes measured the job's cgroup, and the merged
+CPU total matched a known workload. Job-level memory counters were readable,
+though memory accuracy under load was not tested. On that site, job-level
+cgroup I/O and per-core CPU breakdown are unavailable; network counters are
+node-wide. AMD GPU telemetry is not implemented. Other Slurm sites still need
+validation.
+
 A complete, commented job script is in [`examples/gadi-job.pbs`](examples/gadi-job.pbs)
 — copy it and change four lines.
 
