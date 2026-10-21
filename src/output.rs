@@ -193,6 +193,7 @@ mod tests {
             gpu_memory_total: vec![],
             gpu_temperature: vec![],
             gpu_power: vec![],
+            gpu_power_available: vec![],
             gpu_indices: vec![],
             gpu_is_node_scoped: true,
         }

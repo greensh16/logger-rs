@@ -62,15 +62,18 @@ Job 51293839 passed the GPU metric and scope checks using the rebuilt binary:
 It wrote eight samples during the 15-second test, indicating that synchronous
 AMD SMI queries may delay the 0.5-second CPU sampling cadence. GPU polling
 now runs in a background worker. Job 51294237 recorded 31 samples in its
-15-second window, confirming the CPU cadence recovered. Its first GPU reading
-and every subsequent reading had power 0 W, so power collection remains
-unverified on that node. The sampler now tries `rocm-smi --showpower --csv`
-when AMD SMI power is missing. The next acceptance run saves both tools' raw
-power output in its telemetry directory and prints their power columns.
+15-second window, confirming the CPU cadence recovered. Job 51294683 recorded
+31 samples too and captured raw power diagnostics: `amd-smi` returned
+`socket_power=0`, while `rocm-smi` returned `N/A (Secondary die)` for card 0.
+This MI250X die does not expose a usable power reading. The sampler tries
+`rocm-smi --showpower --csv` when AMD SMI power is missing, then marks the
+numeric zero placeholder as unavailable if neither tool has a reading.
+The checker accepts this diagnosed secondary-die case but still fails an
+unexplained missing power reading.
 The checker inspects all readings and can be rerun on existing output:
 
 ```bash
-python3 testing/check_gpu_telemetry.py 51294237
+python3 testing/check_gpu_telemetry.py 51294683
 ```
 
 GPU utilization has not been validated against a known load.

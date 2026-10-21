@@ -1,10 +1,32 @@
 #!/usr/bin/env python3
 """Check a Setonix GPU telemetry run from the repository root."""
 
+import csv
 import glob
 import json
 import os
 import sys
+
+
+def power_unavailable_on_secondary_die(outdir: str) -> bool:
+    """Both vendor tools must identify the same allocated device as unusable."""
+    def rows(filename: str, first_column: str):
+        try:
+            with open(os.path.join(outdir, filename), encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            return []
+        start = next((i for i, line in enumerate(lines)
+                      if line.startswith(first_column + ",")), len(lines))
+        return list(csv.DictReader(lines[start:]))
+
+    amd = rows("amd-smi-metric.csv", "gpu")
+    rocm = rows("rocm-smi-power.csv", "device")
+    return (any(row.get("gpu") == "0" and row.get("socket_power") == "0"
+                for row in amd)
+            and any(row.get("device") == "card0"
+                    and row.get("Average Graphics Package Power (W)") == "N/A (Secondary die)"
+                    for row in rocm))
 
 
 def main() -> int:
@@ -44,8 +66,22 @@ def main() -> int:
                   f"MI250X VRAM is at least 60 GiB: {totals[:3]}")
             powers = [s["gpu_power"][0] for s in gpu_samples
                       if len(s.get("gpu_power") or []) == 1]
-            check(any(power > 0 for power in powers),
-                  f"GPU power had a positive reading: {powers}")
+            measured = any(power > 0 for power in powers)
+            secondary_die = power_unavailable_on_secondary_die(outdir)
+            check(measured or (bool(powers) and all(power == 0 for power in powers)
+                               and secondary_die),
+                  ("GPU power had a positive reading" if measured else
+                   "GPU power unavailable on MI250X secondary die (0 is a placeholder)"
+                   if secondary_die else "GPU power missing without a secondary-die diagnosis")
+                  + f": {powers[:3]}")
+            availability = [s.get("gpu_power_available") for s in gpu_samples]
+            if any(value is not None for value in availability):
+                check(all(s.get("gpu_power_available") ==
+                          [s["gpu_power"][0] > 0]
+                          for s in gpu_samples
+                          if len(s.get("gpu_power") or []) == 1)
+                      and all(len(s.get("gpu_power") or []) == 1 for s in gpu_samples),
+                      "sample power availability matches usable readings")
             temperatures = [s["gpu_temperature"][0] for s in gpu_samples
                             if len(s.get("gpu_temperature") or []) == 1]
             check(any(temp > 0 for temp in temperatures),
@@ -58,6 +94,10 @@ def main() -> int:
             summary = json.load(f)
         check(summary.get("gpu_indices") == [0], "summary retains assigned GPU index")
         check(summary.get("gpu_is_node_scoped") is False, "summary GPU scope is job")
+        if "gpu_power_available" in summary:
+            check(summary["gpu_power_available"] ==
+                  [bool(summary.get("gpu_power_peak") and summary["gpu_power_peak"][0] > 0)],
+                  "summary distinguishes unavailable power from measured power")
 
     print(f"Telemetry files: {outdir}")
     return 1 if errors else 0

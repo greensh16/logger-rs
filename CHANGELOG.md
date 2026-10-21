@@ -59,6 +59,9 @@ This release fixes that, and lays the groundwork for Slurm.
 - AMD GPU power falls back to `rocm-smi --showpower --csv` when AMD SMI reports
   zero or unavailable power. The Setonix acceptance job retains both tools'
   raw power output for diagnosis.
+- GPU samples and per-node summaries now mark whether each power reading was
+  available. On an MI250X secondary die, the vendor tools may report zero and
+  `N/A (Secondary die)`; that zero is a placeholder, not measured power.
 
 ### Changed
 
@@ -91,8 +94,11 @@ This release fixes that, and lays the groundwork for Slurm.
   sampler then passed the AMD GPU metrics and scope checks in job 51293839.
   That job wrote only eight samples in 15 seconds, so the subsequent background
   polling change was tested in job 51294237: 31 samples in 15 seconds. That
-  job's GPU power was zero throughout, so the ROCm SMI fallback and the revised
-  checker await a live validation run. Other Slurm sites remain unvalidated.
+  job's GPU power was zero throughout. Job 51294683 captured both vendor tools:
+  AMD SMI returned zero and ROCm SMI reported `N/A (Secondary die)` for the
+  allocated device. The test still produced 31 CPU samples in 15 seconds and
+  valid job-scoped GPU memory and temperature readings. Other Slurm sites
+  remain unvalidated.
 
 ### Known limitations
 

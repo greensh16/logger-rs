@@ -162,6 +162,10 @@ pub struct TelemetrySample {
     pub gpu_memory_total: Vec<u64>,
     pub gpu_temperature: Vec<f64>,
     pub gpu_power: Vec<f64>,
+    /// Parallel to gpu_power. False means its numeric zero is a placeholder
+    /// for an unavailable vendor sensor, not a measured 0 W.
+    #[serde(default)]
+    pub gpu_power_available: Vec<bool>,
 
     /// Vendor-tool GPU index for each entry above. A step's device cgroup may
     /// renumber this relative to Slurm's physical GPU index.
@@ -299,6 +303,9 @@ pub struct TelemetrySummary {
     pub gpu_memory_total: Vec<u64>,
     pub gpu_temperature_peak: Vec<f64>,
     pub gpu_power_peak: Vec<f64>,
+    /// True for GPUs with at least one usable power reading during the run.
+    #[serde(default)]
+    pub gpu_power_available: Vec<bool>,
     /// Node indices of the GPUs these peaks describe.
     #[serde(default)]
     pub gpu_indices: Vec<u32>,
@@ -489,6 +496,7 @@ impl TelemetrySummary {
             gpu_memory_total: Vec::new(),
             gpu_temperature_peak: Vec::new(),
             gpu_power_peak: Vec::new(),
+            gpu_power_available: Vec::new(),
             gpu_indices: Vec::new(),
             gpu_is_node_scoped: true,
             booked_walltime,

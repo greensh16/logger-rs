@@ -542,6 +542,7 @@ impl TelemetryLogger {
             gpu_memory_total: gpu_stats.memory_total,
             gpu_temperature: gpu_stats.temperature,
             gpu_power: gpu_stats.power,
+            gpu_power_available: gpu_stats.power_available,
             gpu_indices: gpu_stats.indices,
             // False once a vendor-specific visible-device mask has narrowed the
             // readings to the GPUs actually assigned to this job.
@@ -616,6 +617,12 @@ impl TelemetryLogger {
         max_into_u64(&mut s.gpu_memory_total, &sample.gpu_memory_total);
         max_into_f64(&mut s.gpu_temperature_peak, &sample.gpu_temperature);
         max_into_f64(&mut s.gpu_power_peak, &sample.gpu_power);
+        for (i, available) in sample.gpu_power_available.iter().enumerate() {
+            if s.gpu_power_available.len() <= i {
+                s.gpu_power_available.resize(i + 1, false);
+            }
+            s.gpu_power_available[i] |= available;
+        }
         if !sample.gpu_indices.is_empty() {
             s.gpu_indices = sample.gpu_indices.clone();
         }

@@ -32,6 +32,9 @@ pub struct GpuStats {
     pub memory_total: Vec<u64>,
     pub temperature: Vec<f64>,
     pub power: Vec<f64>,
+    /// Whether each power value came from a usable vendor reading. A zero
+    /// placeholder on an MI250X secondary die is not a measured 0 W.
+    pub power_available: Vec<bool>,
     /// True when these entries are the job's GPUs rather than the node's.
     pub job_scoped: bool,
 }
@@ -161,6 +164,7 @@ pub fn filter_to_visible(stats: &GpuStats, visibility: &GpuVisibility) -> GpuSta
         out.memory_total.push(copy_at(&stats.memory_total, i));
         out.temperature.push(copy_at(&stats.temperature, i));
         out.power.push(copy_at(&stats.power, i));
+        out.power_available.push(copy_at(&stats.power_available, i));
     }
 
     out
@@ -416,6 +420,9 @@ fn fill_missing_power(stats: &mut GpuStats, fallback: &[(u32, f64)]) {
             if *value <= 0.0 {
                 if let Some((_, power)) = fallback.iter().find(|(gpu, _)| gpu == index) {
                     *value = *power;
+                    if let Some(available) = stats.power_available.get_mut(i) {
+                        *available = true;
+                    }
                 }
             }
         }
@@ -477,7 +484,12 @@ pub fn parse_amd_smi_csv(stdout: &str) -> GpuStats {
             .memory_total
             .push((metric(Some(total)) * 1024.0 * 1024.0) as u64);
         stats.temperature.push(temperature);
-        stats.power.push(metric(power));
+        let measured_power = power
+            .and_then(|i| values.get(i))
+            .and_then(|v| parse_f64(v))
+            .filter(|value| *value > 0.0);
+        stats.power.push(measured_power.unwrap_or(0.0));
+        stats.power_available.push(measured_power.is_some());
     }
 
     stats
@@ -541,7 +553,9 @@ pub fn parse_nvidia_smi_csv(stdout: &str) -> GpuStats {
             .memory_total
             .push(parse_f64_or_zero(values[3]) as u64 * 1024 * 1024);
         stats.temperature.push(parse_f64_or_zero(values[4]));
-        stats.power.push(parse_f64_or_zero(values[5]));
+        let measured_power = parse_f64(values[5]);
+        stats.power.push(measured_power.unwrap_or(0.0));
+        stats.power_available.push(measured_power.is_some());
         stats
             .uuids
             .push(values.get(6).map(|s| s.to_string()).unwrap_or_default());
@@ -606,6 +620,7 @@ mod tests {
         let stats = parse_nvidia_smi_csv("0, 45, 1234, 8192, 65, [N/A], GPU-x\n");
         assert_eq!(stats.gpu_count(), 1);
         assert_eq!(stats.power, vec![0.0]);
+        assert_eq!(stats.power_available, vec![false]);
     }
 
     #[test]
@@ -633,6 +648,7 @@ gpu,gfx_activity,vcn_activity,socket_power,edge,hotspot,total_vram,used_vram\n\
         assert_eq!(stats.memory_used, vec![10 * 1024 * 1024]);
         assert_eq!(stats.temperature, vec![35.0]);
         assert_eq!(stats.power, vec![216.0]);
+        assert_eq!(stats.power_available, vec![true]);
         assert_eq!(stats.uuids, vec![String::new()]);
     }
 
@@ -670,6 +686,22 @@ card1,36.0,219.0\n",
         );
         fill_missing_power(&mut stats, &fallback);
         assert_eq!(stats.power, vec![217.0, 216.0]);
+        assert_eq!(stats.power_available, vec![true, true]);
+    }
+
+    #[test]
+    fn test_setonix_secondary_die_has_unavailable_power() {
+        let mut stats = parse_amd_smi_csv(
+            "gpu,gfx_activity,used_vram,total_vram,edge,socket_power\n\
+0,0,10,65520,49,0\n",
+        );
+        let fallback = parse_rocm_smi_power_csv(
+            "device,Average Graphics Package Power (W)\n\
+card0,N/A (Secondary die)\n",
+        );
+        fill_missing_power(&mut stats, &fallback);
+        assert_eq!(stats.power, vec![0.0]);
+        assert_eq!(stats.power_available, vec![false]);
     }
 
     #[test]
@@ -777,6 +809,7 @@ card1,36.0,219.0\n",
         assert_eq!(filtered.memory_total.len(), n);
         assert_eq!(filtered.temperature.len(), n);
         assert_eq!(filtered.power.len(), n);
+        assert_eq!(filtered.power_available.len(), n);
     }
 
     #[test]
@@ -817,6 +850,7 @@ card1,36.0,219.0\n",
             memory_total: vec![2],
             temperature: vec![3.0],
             power: vec![4.0],
+            power_available: vec![true],
             job_scoped: false,
         };
         sampler.last_poll = Some(Instant::now());

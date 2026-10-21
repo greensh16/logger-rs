@@ -58,6 +58,8 @@ captured a 256 MiB allocation. On that site, job-level cgroup I/O and per-core
 CPU breakdown are unavailable; network counters are node-wide. AMD GPU
 readings passed an on-cluster [telemetry test](testing/test_gpu_telemetry.slurm),
 and background GPU polling restored the 0.5-second CPU sampling cadence. GPU
+power is unavailable on some MI250X secondary dies; the output marks that
+explicitly rather than treating the vendor's zero placeholder as 0 W. GPU
 utilization under a known load still needs cluster validation. Other Slurm
 sites still need validation.
 

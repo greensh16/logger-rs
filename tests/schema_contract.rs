@@ -102,6 +102,7 @@ const SAMPLE_FIELDS: &[&str] = &[
     "gpu_memory_total",
     "gpu_memory_used",
     "gpu_power",
+    "gpu_power_available",
     "gpu_temperature",
     "gpu_utilization",
     "hostname",
@@ -170,6 +171,7 @@ const SUMMARY_FIELDS: &[&str] = &[
     "gpu_memory_total",
     "gpu_memory_used_peak",
     "gpu_power_peak",
+    "gpu_power_available",
     "gpu_temperature_peak",
     "gpu_utilization_peak",
     "hostname",
@@ -300,6 +302,7 @@ fn full_sample() -> TelemetrySample {
         gpu_memory_total: vec![42_949_672_960],
         gpu_temperature: vec![71.0],
         gpu_power: vec![245.5],
+        gpu_power_available: vec![true],
         // A job given GPU 1 of a multi-GPU node: readings narrowed via
         // CUDA_VISIBLE_DEVICES, so they are job-scoped rather than node-wide.
         gpu_indices: vec![1],
