@@ -1,6 +1,6 @@
 # Build and publish an HPC-ready release when a tag is pushed.
 #
-#   git tag -a v0.3.1 -m "..." && git push origin v0.3.1
+#   git tag -a v0.5.0 -m "logger-rs 0.5.0" && git push origin v0.5.0
 #
 # Produces one tarball that unpacks straight into the module tree documented in
 # examples/modulefile, plus a SHA256 to check the transfer to Gadi.
@@ -203,32 +203,17 @@ jobs:
             Static `x86_64` Linux build (musl), for Gadi and any other
             `x86_64` Linux HPC. No runtime dependencies.
 
-            ### ⚠️ Renamed from `hpc-telemetry`
+            ### In this release
 
-            The binary, the module and the sourced library are now all called
-            `logger-rs`, matching the repository. **Existing job scripts need
-            two lines changed:**
+            - Slurm job identity, cgroup v2 job accounting and multi-node
+              collection, validated on Setonix.
+            - AMD GPU telemetry scoped to assigned devices, with GPU polling
+              off the CPU sampling thread. Unavailable MI250X secondary-die
+              power readings are marked as unavailable.
+            - Periodic per-node summary checkpoints preserve partial results
+              when a walltime kill prevents a clean exit.
 
-            ```diff
-            - module load hpc-telemetry
-            - source hpc-telemetry.sh
-            + module load logger-rs
-            + source logger-rs.sh
-            ```
-
-            `telemetry_start` and `telemetry_stop` are unchanged, so the body of
-            your script does not move.
-
-            ### Fixed in this release
-
-            Remote loggers failed to start on every node but the first. The
-            launcher passed a bare command name to `pbs_tmrsh`/`pbsdsh`, which
-            hand it to `execv()` — and `execv` does not search `PATH`. A
-            multi-node job therefore recorded only its mother superior, with
-            `Could not execv ... errno=2` buried in the job's stderr. The
-            launcher now resolves an absolute path before launching, warns if
-            that path is node-local, and reports failed remote launches a few
-            seconds into the job rather than at the end.
+            See CHANGELOG.md for validation details and known limitations.
 
             ### Install into the module tree
 

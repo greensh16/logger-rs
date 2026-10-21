@@ -17,7 +17,7 @@ repository-code: "https://github.com/greensh16/logger-rs"
 # only mints it after the tag is pushed, which is after this file is committed.
 doi: 10.5281/zenodo.22105313
 license: Apache-2.0
-version: 0.3.1
+version: 0.5.0
 keywords:
   - high-performance computing
   - telemetry

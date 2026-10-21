@@ -4,13 +4,13 @@ Notable changes to logger-rs. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-Releases before 0.3.1 predate this file; see the
-[releases page](https://github.com/greensh16/logger-rs/releases) for those.
+The v0.3.1 release predates these notes; see the
+[releases page](https://github.com/greensh16/logger-rs/releases) for earlier versions.
 
-## [0.3.1] — unreleased
+## [0.5.0] — unreleased
 
-A job killed at its walltime limit used to lose its job-level summary entirely.
-This release fixes that, and lays the groundwork for Slurm.
+This release adds Slurm and AMD GPU telemetry validated on Setonix, and keeps
+partial job summaries when a walltime kill prevents a clean exit.
 
 ### Fixed
 
@@ -110,4 +110,4 @@ This release fixes that, and lays the groundwork for Slurm.
   checkpoint period. The NDJSON stream runs closer to the true end of the job;
   reconstructing exact totals from it is not implemented.
 
-[0.3.1]: https://github.com/greensh16/logger-rs/compare/v0.3.0...v0.3.1
+[0.5.0]: https://github.com/greensh16/logger-rs/compare/v0.3.1...v0.5.0
